@@ -1,0 +1,13 @@
+{
+  "name": "autoconman",
+  "version": "1.0.0",
+  "description": "Google Drive file fetcher via GitHub Actions",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "googleapis": "^144.0.0"
+  }
+}
