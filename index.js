@@ -7,88 +7,60 @@ const DocService = require('./src/services/docService');
 async function main() {
   let dbService;
   try {
-    // 1. Configuration Validation
     validateConfig();
 
-    console.log(`Starting execution... Fetching files for folder ID: ${config.driveFolderId}`);
-
-    // 2. Service Initialization
-    const authService = new AuthService(config.googleCredentials);
-    const auth = authService.getAuth();
+    const auth = new AuthService(config.googleCredentials).getAuth();
     const driveService = new DriveService(auth);
     const docService = new DocService(auth);
-    
-    dbService = new DBService(config.dbConnectionString);
-    await dbService.connect();
 
-    // 3. Fetch from Google Drive
+    // 1. Fetch files from Drive — no DB connection needed yet
     const fetchedFiles = await driveService.listFilesInFolder(config.driveFolderId);
-    
     if (fetchedFiles.length === 0) {
-      console.log('No files found in the specified Google Drive folder.');
-      await dbService.disconnect();
+      console.log('No files found in Drive folder.');
       return;
     }
 
-    // 4. Determine Delta (New/Modified files)
+    // 2. Open DB only now that we have files to compare
+    dbService = new DBService(config.dbConnectionString);
+    await dbService.connect();
+
     const modifiedFiles = await dbService.getModifiedFiles(fetchedFiles);
-
-    // 5. Check "Ready" Content Tag and Output Results
     if (modifiedFiles.length === 0) {
-      console.log('No new or modified files since the last execution. No Delta.');
-    } else {
-      const processedFiles = [];
+      console.log('No new or modified files since the last execution.');
+      return;
+    }
 
-      for (const file of modifiedFiles) {
-        // Only Google Docs can be parsed by the Docs API!
-        if (file.mimeType !== 'application/vnd.google-apps.document') {
-          console.log(`Skipping non-document file: ${file.name}`);
-          continue;
-        }
+    // 3. Check content tag [READY] for each delta file
+    const processedFiles = [];
+    for (const file of modifiedFiles) {
+      if (file.mimeType !== 'application/vnd.google-apps.document') continue;
 
-        const tag = file.isNewFile ? "[NEW]" : "[MODIFIED]";
-        console.log(`\nInspecting Delta File: ${tag} ${file.name} (ID: ${file.id})...`);
-        
-        const contentArray = await docService.getDocumentContentAsArray(file.id);
-        const isReady = docService.isDocumentReady(contentArray);
-
-        if (isReady) {
-          // Strip the [READY] tag itself from the content so we get only the document data
-          const contentPayload = contentArray.filter(p => !p.toUpperCase().includes('[READY]'));
-          console.log(`   --> Status: [READY]! Proceeding with data processing.`);
-          console.log(`\n========= CONTENT PAYLOAD: ${file.name} (${contentPayload.length} paragraphs) =========`);
-          contentPayload.forEach((paragraph, i) => {
-            console.log(`   [${i + 1}] ${paragraph}`);
-          });
-          console.log(`=============================================================================\n`);
-          
-          processedFiles.push(file); // Only save files we actually processed
-        } else {
-          console.log(`   --> Status: Not Ready (Missing '[READY]' tag). Skipping DB update.`);
-        }
-      }
-
-      // 6. Update Database Baseline (ONLY for files that were flagged as READY and fully processed!)
-      if (processedFiles.length > 0) {
-        await dbService.upsertFiles(processedFiles);
+      const contentArray = await docService.getDocumentContentAsArray(file.id);
+      if (docService.isDocumentReady(contentArray)) {
+        const payload = contentArray.filter(p => !p.toUpperCase().includes('[READY]'));
+        console.log(`\n[READY] ${file.name}`);
+        payload.forEach((p, i) => console.log(`  [${i + 1}] ${p}`));
+        processedFiles.push(file);
       } else {
-        console.log('\nNo files were flagged as [READY] to process. Database baseline unchanged.');
+        console.log(`[SKIP] ${file.name} — missing [READY] tag.`);
       }
     }
-    console.log('Execution completed successfully!');
+
+    // 4. Persist baseline only for [READY] files
+    if (processedFiles.length > 0) {
+      await dbService.upsertFiles(processedFiles);
+      console.log(`\nSaved ${processedFiles.length} file(s) to database.`);
+    }
 
   } catch (error) {
-    console.error('Application Execution Failed:');
-    console.error(error.message);
+    console.error('Execution Failed:', error.message);
     process.exitCode = 1;
   } finally {
-    if (dbService) {
-      await dbService.disconnect();
-    }
+    // Always close the connection if it was opened — even on error
+    if (dbService) await dbService.disconnect();
   }
 }
 
-// Execute the main function if this file is run directly
 if (require.main === module) {
   main();
 }
