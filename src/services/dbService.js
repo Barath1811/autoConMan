@@ -2,7 +2,7 @@ const mongoose = require('mongoose');
 
 // Define Schema mapping the Google Drive Output
 const DriveFileLogSchema = new mongoose.Schema({
-  driveId: { type: String, required: true, unique: true },
+  _id: { type: String, required: true }, // The Google Drive ID serves as the exact MongoDB _id
   name: { type: String, required: true },
   mimeType: { type: String, required: true },
   webViewLink: { type: String },
@@ -57,7 +57,7 @@ class DBService {
     const deltaFiles = [];
 
     for (const file of fetchedFiles) {
-      const existingRecord = await DriveFileLog.findOne({ driveId: file.id });
+      const existingRecord = await DriveFileLog.findById(file.id);
       const driveModifiedTime = new Date(file.modifiedTime);
 
       // If record doesn't exist, it's a NEW file
@@ -87,7 +87,7 @@ class DBService {
 
     for (const file of fetchedFiles) {
       await DriveFileLog.updateOne(
-        { driveId: file.id },
+        { _id: file.id },
         { 
           $set: {
             name: file.name,
