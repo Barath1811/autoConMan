@@ -67,9 +67,11 @@ class DBService {
         continue;
       }
 
-      // If record exists, check if Drive's modifiedTime is strictly NEWER than our DB record
-      const dbModifiedTime = new Date(existingRecord.modifiedTime);
-      if (driveModifiedTime > dbModifiedTime) {
+      // If record exists, compare Drive's modifiedTime against our lastFetchedAt.
+      // We use lastFetchedAt (when WE last ran) rather than modifiedTime so that
+      // ANY edit after our last execution is always detected as a delta.
+      const lastFetchedAt = new Date(existingRecord.lastFetchedAt);
+      if (driveModifiedTime > lastFetchedAt) {
         file.isModifiedFile = true; // Tag it for our console output
         deltaFiles.push(file);
       }
