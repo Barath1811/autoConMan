@@ -1,2 +1,9 @@
 node_modules/
 .env
+output/
+*.txt
+*.json
+!package.json
+!package-lock.json
+!available_models.json
+walkthrough.md
