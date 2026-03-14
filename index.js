@@ -25,7 +25,7 @@ async function main() {
     }
 
     // 2. Open DB
-    dbService = new DBService(config.dbConnectionString);
+    dbService = new DBService(config.dbConnectionString, config.dbName);
     await dbService.connect();
 
     const modifiedFiles = await dbService.getModifiedFiles(fetchedFiles);
