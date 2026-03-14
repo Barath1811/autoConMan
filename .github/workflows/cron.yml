@@ -27,4 +27,5 @@ jobs:
           GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
           DRIVE_FOLDER_ID: ${{ secrets.DRIVE_FOLDER_ID }}
           DB_CONNECTION_STRING: ${{ secrets.DB_CONNECTION_STRING }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: npm start
