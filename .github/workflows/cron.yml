@@ -54,14 +54,15 @@ jobs:
         run: |
           mkdir -p /tmp/thumbnail-fonts
           BASE="https://github.com/google/fonts/raw/main/ofl"
-          curl -fL -o /tmp/thumbnail-fonts/BebasNeue-Regular.ttf    "$BASE/bebasneue/BebasNeue-Regular.ttf"
-          curl -fL -o /tmp/thumbnail-fonts/RobotoSlab-Bold.ttf       "$BASE/robotoslab/static/RobotoSlab-Bold.ttf"
-          curl -fL -o /tmp/thumbnail-fonts/PlayfairDisplay-Bold.ttf  "$BASE/playfairdisplay/static/PlayfairDisplay-Bold.ttf"
-          curl -fL -o /tmp/thumbnail-fonts/BlackHanSans-Regular.ttf  "$BASE/blackhansans/BlackHanSans-Regular.ttf"
-          curl -fL -o /tmp/thumbnail-fonts/Pacifico-Regular.ttf      "$BASE/pacifico/Pacifico-Regular.ttf"
-          curl -fL -o /tmp/thumbnail-fonts/Orbitron-Bold.ttf         "$BASE/orbitron/static/Orbitron-Bold.ttf"
-          curl -fL -o /tmp/thumbnail-fonts/Oswald-Bold.ttf           "$BASE/oswald/static/Oswald-Bold.ttf"
-          echo "Fonts downloaded: $(ls /tmp/thumbnail-fonts/)"
+          # Each font has a || true so a 404 won't fail the whole step
+          curl -fsSL -o /tmp/thumbnail-fonts/BebasNeue-Regular.ttf   "$BASE/bebasneue/BebasNeue-Regular.ttf" || true
+          curl -fsSL -o /tmp/thumbnail-fonts/RobotoSlab-Bold.ttf     "$BASE/robotoslab/RobotoSlab%5Bwght%5D.ttf" || true
+          curl -fsSL -o /tmp/thumbnail-fonts/PlayfairDisplay-Bold.ttf "$BASE/playfairdisplay/PlayfairDisplay%5Bwght%5D.ttf" || true
+          curl -fsSL -o /tmp/thumbnail-fonts/BlackHanSans-Regular.ttf "$BASE/blackhansans/BlackHanSans-Regular.ttf" || true
+          curl -fsSL -o /tmp/thumbnail-fonts/Pacifico-Regular.ttf    "$BASE/pacifico/Pacifico-Regular.ttf" || true
+          curl -fsSL -o /tmp/thumbnail-fonts/Orbitron-Bold.ttf       "$BASE/orbitron/Orbitron%5Bwght%5D.ttf" || true
+          curl -fsSL -o /tmp/thumbnail-fonts/Oswald-Bold.ttf         "$BASE/oswald/Oswald%5Bwght%5D.ttf" || true
+          echo "Fonts in /tmp/thumbnail-fonts/: $(ls /tmp/thumbnail-fonts/ 2>/dev/null | tr '\n' ' ')"
 
       - name: Run Drive fetcher script
         env:
