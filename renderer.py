@@ -5,6 +5,7 @@ Reads manifest.json and renders each frame as PNG.
 Character style: serious, composed, dark palette.
 """
 
+import os
 import sys
 import json
 import math
@@ -15,14 +16,15 @@ from pathlib import Path
 # ============================================================================
 # Configuration
 # ============================================================================
-W, H = 640, 480
-FPS = 24
-STAR_COUNT = 30
-STAR_SEED = 42
+W = int(os.getenv('RENDER_WIDTH', 640))
+H = int(os.getenv('RENDER_HEIGHT', 480))
+FPS = int(os.getenv('FPS', 24))
+STAR_COUNT = int(os.getenv('STAR_COUNT', 30))
+STAR_SEED = int(os.getenv('STAR_SEED', 42))
 
 # Scale factor for the alien character.
 # Substantially reduced from 5.0 to 3.5 to ensure antennae stay in frame.
-CHAR_SCALE = 3.5
+CHAR_SCALE = float(os.getenv('CHAR_SCALE', 3.5))
 
 # Expression-specific parameters
 EXPR = {

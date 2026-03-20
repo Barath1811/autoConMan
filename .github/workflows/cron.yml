@@ -2,8 +2,8 @@ name: Fetch Drive Files Cron
 
 on:
   schedule:
-    # Runs every day at 00:00 UTC
-    - cron: '0 0 * * *'
+    # Runs every day at 19:00 IST (13:30 UTC)
+    - cron: '30 13 * * *'
   workflow_dispatch: # Allows manual triggering from the GitHub UI for testing
 
 env:
@@ -24,8 +24,21 @@ jobs:
         with:
           node-version: '22'
 
-      - name: Install dependencies
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install System Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg libcairo2-dev
+
+      - name: Install Node dependencies
         run: npm install
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
 
       - name: Run Drive fetcher script
         env:
@@ -33,4 +46,19 @@ jobs:
           DRIVE_FOLDER_ID: ${{ secrets.DRIVE_FOLDER_ID }}
           DB_CONNECTION_STRING: ${{ secrets.DB_CONNECTION_STRING }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          YOUTUBE_CLIENT_ID: ${{ secrets.YOUTUBE_CLIENT_ID }}
+          YOUTUBE_CLIENT_SECRET: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
+          YOUTUBE_REFRESH_TOKEN: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
+          DEFAULT_VOICE: ${{ secrets.DEFAULT_VOICE }}
+          WORDS_PER_SEC: ${{ secrets.WORDS_PER_SEC }}
+          FPS: ${{ secrets.FPS }}
+          INTRO_DUR: ${{ secrets.INTRO_DUR }}
+          OUTRO_DUR: ${{ secrets.OUTRO_DUR }}
+          PAUSE_DUR: ${{ secrets.PAUSE_DUR }}
+          AI_MODEL: ${{ secrets.AI_MODEL }}
+          RENDER_WIDTH: ${{ secrets.RENDER_WIDTH }}
+          RENDER_HEIGHT: ${{ secrets.RENDER_HEIGHT }}
+          STAR_COUNT: ${{ secrets.STAR_COUNT }}
+          STAR_SEED: ${{ secrets.STAR_SEED }}
+          CHAR_SCALE: ${{ secrets.CHAR_SCALE }}
         run: npm start

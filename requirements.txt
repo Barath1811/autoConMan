@@ -1,0 +1,8 @@
+moviepy==2.1.2
+edge-tts==6.1.15
+numpy==1.26.4
+pycairo==1.27.0
+gTTS==2.5.4
+requests==2.32.3
+python-dotenv==1.0.1
+aiohttp==3.10.11
