@@ -115,15 +115,18 @@ def build_audio_track(manifest, temp_dir):
         CompositeAudioClip | None: Combined audio track, or None if there
                                    are no speech segments.
     """
-    fps = manifest['fps']
-    total_duration = manifest['totalFrames'] / fps
+    fps = manifest.get('fps', 24)
+    total_frames = manifest.get('totalFrames', 0)
+    total_duration = total_frames / fps
+
+    print(f'[AudioGenerator] Processing manifest: {total_frames} frames, {total_duration:.2f}s total')
 
     segments = extract_speech_segments(manifest)
     if not segments:
-        print('[AudioGenerator] No speech segments found.')
+        print('[AudioGenerator] CRITICAL: No speech segments extracted from manifest.')
         return None
 
-    print(f'[AudioGenerator] Generating Neural TTS for {len(segments)} segment(s)...')
+    print(f'[AudioGenerator] Found {len(segments)} segment(s). Generating audio...')
 
     audio_clips = []
 
@@ -133,16 +136,22 @@ def build_audio_track(manifest, temp_dir):
 
         # Generate Neural TTS
         try:
-            print(f'[AudioGenerator] Generating TTS for: "{seg["text"][:30]}..." ({seg["expression"]})')
+            print(f'[AudioGenerator] Seg {i}: "{seg["text"][:40]}..." at {seg["start_time"]:.2f}s ({seg_duration:.2f}s)')
             asyncio.run(generate_segment_audio(seg['text'], mp3_path, seg['expression']))
-            print(f'[AudioGenerator] Saved: {mp3_path}')
+            
+            if not os.path.exists(mp3_path) or os.path.getsize(mp3_path) == 0:
+                raise Exception("Generated MP3 is empty or missing")
+                
+            print(f'[AudioGenerator]   ✓ OK: {os.path.getsize(mp3_path)} bytes')
         except Exception as e:
-            print(f'[AudioGenerator] WARNING: TTS failed for segment {i}: {e}')
+            print(f'[AudioGenerator]   ✗ FAILED: {e}')
             continue
 
         # Load audio clip and position it at the right timestamp
         try:
             clip = AudioFileClip(mp3_path)
+            
+            print(f'[AudioGenerator]   Clip dur: {clip.duration:.2f}s (Target: {seg_duration:.2f}s)')
 
             # If TTS is slightly longer than the allocated window, trim it
             if clip.duration > seg_duration:
@@ -151,13 +160,13 @@ def build_audio_track(manifest, temp_dir):
             clip = clip.with_start(seg['start_time'])
             audio_clips.append(clip)
         except Exception as e:
-            print(f'[AudioGenerator] WARNING: Could not load mp3 for segment {i}: {e}')
+            print(f'[AudioGenerator]   ✗ LOAD ERROR: {e}')
 
     if not audio_clips:
-        print('[AudioGenerator] No audio clips generated.')
+        print('[AudioGenerator] CRITICAL: No audio clips successfully generated/loaded.')
         return None
 
-    print(f'[AudioGenerator] Compositing {len(audio_clips)} clip(s) into {total_duration:.2f}s audio track...')
+    print(f'[AudioGenerator] Compositing {len(audio_clips)} clip(s) into {total_duration:.2f}s track...')
     composite = CompositeAudioClip(audio_clips)
     return composite
 
