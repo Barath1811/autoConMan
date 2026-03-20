@@ -2,46 +2,46 @@
 """
 Audio Generator - Produces TTS audio synchronized to the frame manifest.
 
+Uses Google Cloud Text-to-Speech (Neural2 voices) for natural-sounding speech,
+with SSML prosody tags for expression-based pitch and rate modulation.
+Falls back to gTTS if Cloud TTS is unavailable.
+
 Flow:
-  1. Extract speech segments from the manifest (group consecutive subVisible frames).
-  2. Generate a gTTS .mp3 for each segment.
-  3. Apply FFmpeg audio filters (pitch shift + tempo) for expression-based modulation.
-  4. Composite all clips at their correct timestamps → one AudioClip matching
-     the video duration.
+  1. Extract speech segments from the manifest.
+  2. Generate TTS audio per segment with expression-specific SSML.
+  3. Composite all clips at their correct timestamps → one AudioClip.
 """
 
 import os
-import subprocess
+import json
 import tempfile
-from gtts import gTTS
+import subprocess
 from moviepy import AudioFileClip, CompositeAudioClip
 
 
-# Expression-based audio modulation via FFmpeg filters.
-# pitch_factor: multiplies sample rate (>1 = higher pitch, <1 = lower pitch)
-# tempo_factor: adjusts speaking speed (>1 = faster, <1 = slower)
+# Expression-based SSML prosody modifiers
+# pitch: semitones (+2st = higher, -2st = lower)
+# rate: speaking rate percentage ("90%" = slower, "110%" = faster)
 VOICE_MAP = {
-    'HAPPY':     {'pitch_factor': 1.06, 'tempo_factor': 1.08},
-    'LAUGHING':  {'pitch_factor': 1.10, 'tempo_factor': 1.15},
-    'SAD':       {'pitch_factor': 0.93, 'tempo_factor': 0.88},
-    'ANGRY':     {'pitch_factor': 0.97, 'tempo_factor': 1.10},
-    'SURPRISED': {'pitch_factor': 1.12, 'tempo_factor': 1.05},
-    'WAVING':    {'pitch_factor': 1.04, 'tempo_factor': 1.02},
-    'THINK':     {'pitch_factor': 0.98, 'tempo_factor': 0.93},
-    'IDLE':      {'pitch_factor': 1.00, 'tempo_factor': 1.00},
+    'HAPPY':     {'pitch': '+2st', 'rate': '110%'},
+    'LAUGHING':  {'pitch': '+3st', 'rate': '120%'},
+    'SAD':       {'pitch': '-2st', 'rate': '85%'},
+    'ANGRY':     {'pitch': '-1st', 'rate': '115%'},
+    'SURPRISED': {'pitch': '+4st', 'rate': '108%'},
+    'WAVING':    {'pitch': '+1st', 'rate': '105%'},
+    'THINK':     {'pitch': '-1st', 'rate': '90%'},
+    'IDLE':      {'pitch': '+0st', 'rate': '100%'},
 }
+
+# Google Cloud TTS voice - en-US-Neural2-J is a natural, expressive male voice.
+# Other options: en-US-Neural2-D (male), en-US-Neural2-F (female), en-US-Studio-O (male, highest quality)
+CLOUD_TTS_VOICE = os.getenv('TTS_VOICE_NAME', 'en-US-Neural2-J')
+CLOUD_TTS_LANGUAGE = 'en-US'
 
 
 def extract_speech_segments(manifest):
     """
     Parse manifest frames into a flat list of speech segments.
-
-    Each segment is a dict:
-        { 'text': str, 'start_time': float, 'end_time': float, 'expression': str }
-
-    Consecutive frames sharing the same non-empty text are merged into one
-    segment. Silence frames (subVisible=False or empty text) produce gaps
-    between segments.
     """
     fps = manifest['fps']
     frames = manifest['frames']
@@ -59,7 +59,6 @@ def extract_speech_segments(manifest):
 
         if visible and text:
             if text != current_text:
-                # Flush the previous segment
                 if current_text is not None:
                     segments.append({
                         'text': current_text,
@@ -71,7 +70,6 @@ def extract_speech_segments(manifest):
                 start_frame = frame_idx
                 current_expr = expr
         else:
-            # Silence frame — flush any open segment
             if current_text is not None:
                 segments.append({
                     'text': current_text,
@@ -82,7 +80,6 @@ def extract_speech_segments(manifest):
                 current_text = None
                 start_frame = None
 
-    # Flush anything still open at the end
     if current_text is not None:
         total_frames = manifest['totalFrames']
         segments.append({
@@ -95,85 +92,127 @@ def extract_speech_segments(manifest):
     return segments
 
 
-def apply_expression_filter(input_mp3, output_mp3, expression):
+def generate_with_cloud_tts(text, mp3_path, expression):
     """
-    Apply pitch and tempo FFmpeg filters based on the expression.
-    Falls back to copying the original if FFmpeg fails.
+    Generate audio using Google Cloud Text-to-Speech with SSML prosody.
+    Returns True on success, False on failure.
     """
-    params = VOICE_MAP.get(expression, VOICE_MAP['IDLE'])
-    pitch = params['pitch_factor']
-    tempo = params['tempo_factor']
-    base_rate = 24000
-
-    # If no modulation needed, just copy
-    if pitch == 1.0 and tempo == 1.0:
-        import shutil
-        shutil.copy(input_mp3, output_mp3)
-        return
-
-    # FFmpeg filter chain:
-    # 1. asetrate: shift pitch by resampling (changes speed too)
-    # 2. aresample: bring back to original sample rate
-    # 3. atempo: correct the speed back (or add extra tempo change)
-    # atempo is limited to [0.5, 2.0] so chain if needed
-    resampled_rate = int(base_rate * pitch)
-    atempo = tempo / pitch  # compensate speed from pitch shift
-
-    # Clamp atempo to valid range [0.5, 2.0]
-    atempo_chain = []
-    remaining = atempo
-    while remaining > 2.0:
-        atempo_chain.append('atempo=2.0')
-        remaining /= 2.0
-    while remaining < 0.5:
-        atempo_chain.append('atempo=0.5')
-        remaining *= 2.0
-    atempo_chain.append(f'atempo={remaining:.4f}')
-
-    filter_str = f'asetrate={resampled_rate},aresample={base_rate},' + ','.join(atempo_chain)
-
-    cmd = [
-        'ffmpeg', '-y', '-i', input_mp3,
-        '-af', filter_str,
-        output_mp3
-    ]
-
     try:
-        subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    except subprocess.CalledProcessError:
-        print(f'[AudioGenerator] WARNING: FFmpeg filter failed for expression {expression}, using original.')
-        import shutil
-        shutil.copy(input_mp3, output_mp3)
+        from google.cloud import texttospeech
+        import google.oauth2.service_account
+
+        # Load credentials from environment variable (same as Drive/YouTube)
+        credentials_json = os.getenv('GOOGLE_CREDENTIALS')
+        if not credentials_json:
+            return False
+
+        credentials_info = json.loads(credentials_json)
+        credentials = google.oauth2.service_account.Credentials.from_service_account_info(
+            credentials_info,
+            scopes=['https://www.googleapis.com/auth/cloud-platform']
+        )
+
+        client = texttospeech.TextToSpeechClient(credentials=credentials)
+
+        # Build SSML with expression-specific prosody
+        modifiers = VOICE_MAP.get(expression, VOICE_MAP['IDLE'])
+        ssml = (
+            f'<speak>'
+            f'<prosody pitch="{modifiers["pitch"]}" rate="{modifiers["rate"]}">'
+            f'{text}'
+            f'</prosody>'
+            f'</speak>'
+        )
+
+        synthesis_input = texttospeech.SynthesisInput(ssml=ssml)
+        voice = texttospeech.VoiceSelectionParams(
+            language_code=CLOUD_TTS_LANGUAGE,
+            name=CLOUD_TTS_VOICE,
+        )
+        audio_config = texttospeech.AudioConfig(
+            audio_encoding=texttospeech.AudioEncoding.MP3,
+        )
+
+        response = client.synthesize_speech(
+            input=synthesis_input,
+            voice=voice,
+            audio_config=audio_config,
+        )
+
+        with open(mp3_path, 'wb') as f:
+            f.write(response.audio_content)
+
+        return True
+
+    except Exception as e:
+        print(f'[AudioGenerator] Cloud TTS unavailable ({e}), falling back to gTTS.')
+        return False
 
 
-def generate_segment_audio(text, mp3_path, expression, temp_dir):
-    """Generate a single segment using gTTS and apply expression-based modulation."""
+def generate_with_gtts_fallback(text, mp3_path, expression):
+    """
+    Fallback: gTTS + FFmpeg expression modulation.
+    """
+    from gtts import gTTS
+
     raw_mp3 = mp3_path.replace('.mp3', '_raw.mp3')
-    
-    # Step 1: Generate TTS
+
+    # Generate neutral TTS
     tts = gTTS(text=text, lang='en', slow=False)
     tts.save(raw_mp3)
 
-    # Step 2: Apply expression-based pitch/tempo modulation
-    apply_expression_filter(raw_mp3, mp3_path, expression)
+    # Apply FFmpeg pitch/tempo modulation based on expression
+    modifiers = VOICE_MAP.get(expression, VOICE_MAP['IDLE'])
 
-    # Cleanup raw file
+    # Parse rate percentage to a float ratio
+    rate_str = modifiers['rate'].replace('%', '')
+    tempo = float(rate_str) / 100.0
+
+    # Parse pitch semitones to a frequency ratio
+    pitch_str = modifiers['pitch'].replace('st', '').replace('+', '')
+    semitones = float(pitch_str)
+    pitch_factor = 2 ** (semitones / 12.0)
+
+    # Build FFmpeg filter chain
+    resampled_rate = int(24000 * pitch_factor)
+    correct_tempo = tempo / pitch_factor
+
+    # Clamp atempo to valid range [0.5, 2.0]
+    atempo_filters = []
+    remaining = correct_tempo
+    while remaining > 2.0:
+        atempo_filters.append('atempo=2.0')
+        remaining /= 2.0
+    while remaining < 0.5:
+        atempo_filters.append('atempo=0.5')
+        remaining *= 2.0
+    atempo_filters.append(f'atempo={remaining:.4f}')
+
+    filter_str = f'asetrate={resampled_rate},aresample=24000,' + ','.join(atempo_filters)
+
+    cmd = ['ffmpeg', '-y', '-i', raw_mp3, '-af', filter_str, mp3_path]
+    try:
+        subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except subprocess.CalledProcessError:
+        import shutil
+        shutil.copy(raw_mp3, mp3_path)
+
     if os.path.exists(raw_mp3):
         os.remove(raw_mp3)
 
 
+def generate_segment_audio(text, mp3_path, expression):
+    """
+    Generate audio: try Google Cloud TTS first, fall back to gTTS.
+    """
+    success = generate_with_cloud_tts(text, mp3_path, expression)
+    if not success:
+        generate_with_gtts_fallback(text, mp3_path, expression)
+
+
 def build_audio_track(manifest, temp_dir):
     """
-    Generate TTS audio for all speech segments in the manifest and composite
-    them into a single AudioClip whose duration matches the video.
-
-    Args:
-        manifest (dict): Loaded manifest.json dict.
-        temp_dir (str): Directory to write temporary .mp3 files.
-
-    Returns:
-        CompositeAudioClip | None: Combined audio track, or None if there
-                                   are no speech segments.
+    Generate TTS audio for all speech segments and composite into one AudioClip.
     """
     fps = manifest.get('fps', 24)
     total_duration = manifest.get('totalFrames', 0) / fps
@@ -183,7 +222,7 @@ def build_audio_track(manifest, temp_dir):
         print('[AudioGenerator] No speech segments found.')
         return None
 
-    print(f'[AudioGenerator] Generating TTS for {len(segments)} segment(s)...')
+    print(f'[AudioGenerator] Generating TTS for {len(segments)} segment(s) [{CLOUD_TTS_VOICE}]...')
 
     audio_clips = []
 
@@ -192,23 +231,17 @@ def build_audio_track(manifest, temp_dir):
         seg_duration = seg['end_time'] - seg['start_time']
         expression = seg['expression']
 
-        # Generate TTS with expression modulation
         try:
-            print(f'[AudioGenerator] Generating TTS for: "{seg["text"][:40]}..." ({expression})')
-            generate_segment_audio(seg['text'], mp3_path, expression, temp_dir)
-            print(f'[AudioGenerator] Saved: {mp3_path}')
+            print(f'[AudioGenerator] {expression}: "{seg["text"][:40]}..."')
+            generate_segment_audio(seg['text'], mp3_path, expression)
         except Exception as e:
             print(f'[AudioGenerator] WARNING: TTS failed for segment {i}: {e}')
             continue
 
-        # Load audio clip and position it at the right timestamp
         try:
             clip = AudioFileClip(mp3_path)
-
-            # If TTS is slightly longer than the allocated window, trim it
             if clip.duration > seg_duration:
                 clip = clip.subclipped(0, seg_duration)
-
             clip = clip.with_start(seg['start_time'])
             audio_clips.append(clip)
         except Exception as e:
@@ -219,13 +252,11 @@ def build_audio_track(manifest, temp_dir):
         return None
 
     print(f'[AudioGenerator] Compositing {len(audio_clips)} clip(s) into {total_duration:.2f}s audio track...')
-    composite = CompositeAudioClip(audio_clips)
-    return composite
+    return CompositeAudioClip(audio_clips)
 
 
 def main():
     import sys
-    import json
     if len(sys.argv) != 3:
         print("Usage: python audio_generator.py <manifest.json> <output_audio.mp3>")
         sys.exit(1)
