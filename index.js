@@ -10,6 +10,7 @@ const DBService = require('./src/services/dbService');
 const DocService = require('./src/services/docService');
 const AIService = require('./src/services/aiService');
 const YouTubeService = require('./src/services/youtubeService');
+const TrendService = require('./src/services/trendService');
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -201,76 +202,100 @@ async function main() {
   const docService = new DocService(auth);
   const aiService = new AIService(config);
   const youtubeService = new YouTubeService(config);
+  const trendService = new TrendService();
 
   const dbService = new DBService(config.dbConnectionString, config.dbName);
 
   try {
-    // 1. Fetch files from Drive
-    log('[1/4] Fetching files from Google Drive...');
-    const allFiles = await driveService.listFilesInFolder(config.driveFolderId);
-    log(`Found ${allFiles.length} file(s) in Drive`);
-
-    // 2. Detect new/modified files via DB
-    log('[2/4] Checking for new or modified files...');
     await dbService.connect();
+
+    // ─── 1. Check Google Drive ───
+    // ─── 1. Select Content Source (Drive Priority) ───
+    log('[1/4] Scanning for new content...');
+    const allFiles = await driveService.listFilesInFolder(config.driveFolderId);
     const newFiles = await dbService.getModifiedFiles(allFiles);
-    if (newFiles.length === 0) {
-      log('No new or modified files. Nothing to do.');
-      return;
-    }
-    log(`${newFiles.length} file(s) to process`);
+    
+    let target = null;
+    let payload = null;
+    let sourceType = null;
 
-    // 3. Process each file
-    const outputDir = path.join(__dirname, 'output');
-    fs.mkdirSync(outputDir, { recursive: true });
-
-    const processedFiles = [];
+    // Check Drive for [READY] files
     for (const file of newFiles) {
       if (file.mimeType !== 'application/vnd.google-apps.document') continue;
-
-      log(`\n[3/4] Processing: ${file.name}`);
-      try {
-        // Read document content
-        const contentArray = await docService.getDocumentContentAsArray(file.id);
-        if (!docService.isDocumentReady(contentArray)) {
-          log(`  SKIP: ${file.name} — missing [READY] tag`);
-          continue;
-        }
-
-        // Strip [READY] marker, send remaining content to AI
-        const payload = contentArray.filter(p => !p.toUpperCase().includes('[READY]'));
-        log(`  → Rewriting content with AI...`);
-        const script = await aiService.generateScript(payload);
-
-        // Write script to temp, generate video, delete script
-        const scriptPath = path.join(os.tmpdir(), `acm_script_${Date.now()}.txt`);
-        fs.writeFileSync(scriptPath, script);
-
-        const videoPath = path.join(outputDir, `${file.name.replace(/\s+/g, '_')}_output.mp4`);
-        await generateVideo(scriptPath, videoPath);
-        fs.unlinkSync(scriptPath);
-
-        // Upload to YouTube
-        log(`[4/4] Uploading to YouTube...`);
-        await youtubeService.uploadVideo(videoPath, {
-          title: file.name,
-          description: `Auto-generated commentary.\n\nSource: ${file.name}`,
-          tags: ['AI', 'Automation', 'Commentary'],
-        });
-
-        processedFiles.push(file);
-      } catch (err) {
-        log(`  ✗ Failed: ${err.message}`);
-        console.error(err.stack);
+      
+      const content = await docService.getDocumentContentAsArray(file.id);
+      if (docService.isDocumentReady(content)) {
+        log(`  → Selected [READY] Drive file: "${file.name}"`);
+        target = file;
+        payload = content.filter(p => !p.toUpperCase().includes('[READY]'));
+        sourceType = 'DOC';
+        break;
       }
     }
 
-    // 4. Mark files as processed in DB
-    if (processedFiles.length > 0) {
-      await dbService.upsertFiles(processedFiles);
-      log(`✓ Database updated for ${processedFiles.length} file(s)`);
+    // Fallback to Google Trends
+    if (!target) {
+      log('  → No ready files in Drive. Checking Google Trends...');
+      const trend = await trendService.getLatestTrend(dbService);
+      if (trend) {
+        log(`  → Selected trending topic: "${trend.title}"`);
+        target = trend;
+        payload = trend.researchChunks;
+        sourceType = 'RESEARCH';
+      }
     }
 
+    if (!target) {
+      log('Nothing to process today. System idling.');
+      return;
+    }
+
+    // ─── 2. AI Content Generation ───
+    log(`\n[2/4] Drafting script using ${sourceType === 'DOC' ? 'Document' : 'Research'} prompt...`);
+    const script = await aiService.generateScript(payload, sourceType);
+    
+    log(`  → Analyzing script for metadata...`);
+    const metadata = await aiService.generateMetadata(script, sourceType);
+
+    // ─── 3. Video Production ───
+    log('[3/4] Starting video production pipeline...');
+    const outputDir = path.join(__dirname, 'output');
+    fs.mkdirSync(outputDir, { recursive: true });
+
+    const scriptPath = path.join(os.tmpdir(), `acm_script_${Date.now()}.txt`);
+    fs.writeFileSync(scriptPath, script);
+
+    const rawTitle = target.name || target.title;
+    const safeName = rawTitle.replace(/\s+/g, '_').substring(0, 50);
+    const videoPath = path.join(outputDir, `${safeName}_output.mp4`);
+    
+    await generateVideo(scriptPath, videoPath);
+    fs.unlinkSync(scriptPath);
+
+    // ─── 4. YouTube Upload ───
+    log('[4/4] Uploading to YouTube...');
+    
+    const ytTitle = metadata?.title || `🔥 ${rawTitle} #Shorts`;
+    const ytDesc = metadata?.description || `Auto-generated analysis of ${rawTitle}.`;
+    const ytTags = metadata?.hashtags || ['AI', 'Automation', 'Trending', sourceType, 'Shorts'];
+
+    await youtubeService.uploadVideo(videoPath, {
+      title: ytTitle,
+      description: `${ytDesc}\n\nTags: ${ytTags.join(' ')}`,
+      tags: ytTags.map(t => t.replace('#', '')),
+    });
+
+    // ─── 5. Finalize Log ───
+    if (sourceType === 'DOC') {
+      await dbService.upsertFiles([target]);
+    } else {
+      await dbService.saveTrend(target);
+    }
+    log(`✓ ${sourceType} processed and logged successfully.`);
+
+  } catch (err) {
+    log(`✗ Pipeline Fatal Error: ${err.message}`);
+    console.error(err.stack);
   } finally {
     await dbService.disconnect();
   }
