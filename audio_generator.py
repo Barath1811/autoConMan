@@ -2,47 +2,46 @@
 """
 Audio Generator - Produces TTS audio synchronized to the frame manifest.
 
-Uses Google Cloud Text-to-Speech (Neural2 voices) for natural-sounding speech,
-with SSML prosody tags for expression-based pitch and rate modulation.
-Falls back to gTTS if Cloud TTS is unavailable.
+Uses Piper TTS (free, offline neural voice) for natural-sounding speech.
+Expression-based pitch/tempo modulation applied via FFmpeg post-processing.
+Falls back to gTTS if Piper model is not available.
 
 Flow:
   1. Extract speech segments from the manifest.
-  2. Generate TTS audio per segment with expression-specific SSML.
-  3. Composite all clips at their correct timestamps → one AudioClip.
+  2. Generate TTS per segment using Piper (or gTTS fallback).
+  3. Apply FFmpeg pitch/tempo filter per expression.
+  4. Composite all clips at their correct timestamps → one AudioClip.
 """
 
 import os
+import wave
 import json
 import tempfile
 import subprocess
+from pathlib import Path
 from moviepy import AudioFileClip, CompositeAudioClip
 
 
-# Expression-based SSML prosody modifiers
-# pitch: semitones (+2st = higher, -2st = lower)
-# rate: speaking rate percentage ("90%" = slower, "110%" = faster)
-VOICE_MAP = {
-    'HAPPY':     {'pitch': '+2st', 'rate': '110%'},
-    'LAUGHING':  {'pitch': '+3st', 'rate': '120%'},
-    'SAD':       {'pitch': '-2st', 'rate': '85%'},
-    'ANGRY':     {'pitch': '-1st', 'rate': '115%'},
-    'SURPRISED': {'pitch': '+4st', 'rate': '108%'},
-    'WAVING':    {'pitch': '+1st', 'rate': '105%'},
-    'THINK':     {'pitch': '-1st', 'rate': '90%'},
-    'IDLE':      {'pitch': '+0st', 'rate': '100%'},
-}
+# Piper voice model path — downloaded in cron.yml before npm start
+PIPER_MODEL_PATH = os.getenv('PIPER_MODEL_PATH', '/tmp/piper-models/voice.onnx')
 
-# Google Cloud TTS voice - en-US-Neural2-J is a natural, expressive male voice.
-# Other options: en-US-Neural2-D (male), en-US-Neural2-F (female), en-US-Studio-O (male, highest quality)
-CLOUD_TTS_VOICE = os.getenv('TTS_VOICE_NAME', 'en-US-Neural2-J')
-CLOUD_TTS_LANGUAGE = 'en-US'
+# Expression-based FFmpeg modulation
+# pitch_semitones: positive = higher pitch, negative = lower
+# tempo: 1.0 = normal, >1 = faster, <1 = slower
+VOICE_MAP = {
+    'HAPPY':     {'pitch': +2.0, 'tempo': 1.08},
+    'LAUGHING':  {'pitch': +3.0, 'tempo': 1.15},
+    'SAD':       {'pitch': -2.5, 'tempo': 0.88},
+    'ANGRY':     {'pitch': -1.0, 'tempo': 1.12},
+    'SURPRISED': {'pitch': +3.5, 'tempo': 1.05},
+    'WAVING':    {'pitch': +1.5, 'tempo': 1.04},
+    'THINK':     {'pitch': -1.0, 'tempo': 0.92},
+    'IDLE':      {'pitch':  0.0, 'tempo': 1.00},
+}
 
 
 def extract_speech_segments(manifest):
-    """
-    Parse manifest frames into a flat list of speech segments.
-    """
+    """Parse manifest frames into a flat list of speech segments."""
     fps = manifest['fps']
     frames = manifest['frames']
     segments = []
@@ -92,92 +91,66 @@ def extract_speech_segments(manifest):
     return segments
 
 
-def generate_with_cloud_tts(text, mp3_path, expression):
+def generate_with_piper(text, wav_path):
     """
-    Generate audio using Google Cloud Text-to-Speech with SSML prosody.
-    Returns True on success, False on failure.
+    Generate WAV audio using Piper TTS (offline neural voice).
+    Returns True on success, False if model not available.
     """
+    if not Path(PIPER_MODEL_PATH).exists():
+        return False
+
     try:
-        from google.cloud import texttospeech
-        import google.oauth2.service_account
+        from piper.voice import PiperVoice
 
-        # Load credentials from environment variable (same as Drive/YouTube)
-        credentials_json = os.getenv('GOOGLE_CREDENTIALS')
-        if not credentials_json:
-            return False
-
-        credentials_info = json.loads(credentials_json)
-        credentials = google.oauth2.service_account.Credentials.from_service_account_info(
-            credentials_info,
-            scopes=['https://www.googleapis.com/auth/cloud-platform']
-        )
-
-        client = texttospeech.TextToSpeechClient(credentials=credentials)
-
-        # Build SSML with expression-specific prosody
-        modifiers = VOICE_MAP.get(expression, VOICE_MAP['IDLE'])
-        ssml = (
-            f'<speak>'
-            f'<prosody pitch="{modifiers["pitch"]}" rate="{modifiers["rate"]}">'
-            f'{text}'
-            f'</prosody>'
-            f'</speak>'
-        )
-
-        synthesis_input = texttospeech.SynthesisInput(ssml=ssml)
-        voice = texttospeech.VoiceSelectionParams(
-            language_code=CLOUD_TTS_LANGUAGE,
-            name=CLOUD_TTS_VOICE,
-        )
-        audio_config = texttospeech.AudioConfig(
-            audio_encoding=texttospeech.AudioEncoding.MP3,
-        )
-
-        response = client.synthesize_speech(
-            input=synthesis_input,
-            voice=voice,
-            audio_config=audio_config,
-        )
-
-        with open(mp3_path, 'wb') as f:
-            f.write(response.audio_content)
-
+        voice = PiperVoice.load(PIPER_MODEL_PATH, use_cuda=False)
+        with wave.open(wav_path, 'w') as wav_file:
+            voice.synthesize(text, wav_file)
         return True
-
     except Exception as e:
-        print(f'[AudioGenerator] Cloud TTS unavailable ({e}), falling back to gTTS.')
+        print(f'[AudioGenerator] Piper error: {e}')
         return False
 
 
-def generate_with_gtts_fallback(text, mp3_path, expression):
-    """
-    Fallback: gTTS + FFmpeg expression modulation.
-    """
+def generate_with_gtts_fallback(text, wav_path):
+    """Fallback: gTTS + convert to WAV via FFmpeg."""
     from gtts import gTTS
+    import tempfile
 
-    raw_mp3 = mp3_path.replace('.mp3', '_raw.mp3')
-
-    # Generate neutral TTS
+    tmp_mp3 = wav_path.replace('.wav', '_gtts.mp3')
     tts = gTTS(text=text, lang='en', slow=False)
-    tts.save(raw_mp3)
+    tts.save(tmp_mp3)
 
-    # Apply FFmpeg pitch/tempo modulation based on expression
-    modifiers = VOICE_MAP.get(expression, VOICE_MAP['IDLE'])
+    # Convert mp3 to wav for uniform pipeline
+    cmd = ['ffmpeg', '-y', '-i', tmp_mp3, wav_path]
+    subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
-    # Parse rate percentage to a float ratio
-    rate_str = modifiers['rate'].replace('%', '')
-    tempo = float(rate_str) / 100.0
+    if os.path.exists(tmp_mp3):
+        os.remove(tmp_mp3)
 
-    # Parse pitch semitones to a frequency ratio
-    pitch_str = modifiers['pitch'].replace('st', '').replace('+', '')
-    semitones = float(pitch_str)
+
+def apply_expression_filter(input_wav, output_mp3, expression):
+    """
+    Apply pitch shift + tempo change via FFmpeg based on expression.
+    """
+    params = VOICE_MAP.get(expression, VOICE_MAP['IDLE'])
+    semitones = params['pitch']
+    tempo = params['tempo']
+
+    if semitones == 0.0 and tempo == 1.0:
+        # No modulation — direct convert to mp3
+        cmd = ['ffmpeg', '-y', '-i', input_wav, output_mp3]
+        subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return
+
+    # Frequency ratio for semitone shift
     pitch_factor = 2 ** (semitones / 12.0)
+    base_rate = 22050
+    resampled_rate = int(base_rate * pitch_factor)
 
-    # Build FFmpeg filter chain
-    resampled_rate = int(24000 * pitch_factor)
+    # atempo correction: compensate speed introduced by pitch shift, then apply tempo
     correct_tempo = tempo / pitch_factor
 
-    # Clamp atempo to valid range [0.5, 2.0]
+    # Clamp atempo to valid range [0.5, 2.0] using chain
     atempo_filters = []
     remaining = correct_tempo
     while remaining > 2.0:
@@ -188,26 +161,32 @@ def generate_with_gtts_fallback(text, mp3_path, expression):
         remaining *= 2.0
     atempo_filters.append(f'atempo={remaining:.4f}')
 
-    filter_str = f'asetrate={resampled_rate},aresample=24000,' + ','.join(atempo_filters)
+    filter_str = f'asetrate={resampled_rate},aresample={base_rate},' + ','.join(atempo_filters)
 
-    cmd = ['ffmpeg', '-y', '-i', raw_mp3, '-af', filter_str, mp3_path]
+    cmd = ['ffmpeg', '-y', '-i', input_wav, '-af', filter_str, output_mp3]
     try:
         subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except subprocess.CalledProcessError:
-        import shutil
-        shutil.copy(raw_mp3, mp3_path)
-
-    if os.path.exists(raw_mp3):
-        os.remove(raw_mp3)
+        # On failure, convert without filter
+        cmd = ['ffmpeg', '-y', '-i', input_wav, output_mp3]
+        subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
-def generate_segment_audio(text, mp3_path, expression):
-    """
-    Generate audio: try Google Cloud TTS first, fall back to gTTS.
-    """
-    success = generate_with_cloud_tts(text, mp3_path, expression)
+def generate_segment_audio(text, mp3_path, expression, temp_dir):
+    """Generate expressive audio for one segment."""
+    wav_path = mp3_path.replace('.mp3', '.wav')
+
+    # Step 1: TTS → WAV
+    success = generate_with_piper(text, wav_path)
     if not success:
-        generate_with_gtts_fallback(text, mp3_path, expression)
+        print('[AudioGenerator] Piper unavailable — using gTTS fallback.')
+        generate_with_gtts_fallback(text, wav_path)
+
+    # Step 2: Apply FFmpeg expression modulation → MP3
+    apply_expression_filter(wav_path, mp3_path, expression)
+
+    if os.path.exists(wav_path):
+        os.remove(wav_path)
 
 
 def build_audio_track(manifest, temp_dir):
@@ -222,7 +201,9 @@ def build_audio_track(manifest, temp_dir):
         print('[AudioGenerator] No speech segments found.')
         return None
 
-    print(f'[AudioGenerator] Generating TTS for {len(segments)} segment(s) [{CLOUD_TTS_VOICE}]...')
+    using_piper = Path(PIPER_MODEL_PATH).exists()
+    print(f'[AudioGenerator] TTS engine: {"Piper (Neural)" if using_piper else "gTTS (fallback)"}')
+    print(f'[AudioGenerator] Generating {len(segments)} segment(s)...')
 
     audio_clips = []
 
@@ -232,10 +213,10 @@ def build_audio_track(manifest, temp_dir):
         expression = seg['expression']
 
         try:
-            print(f'[AudioGenerator] {expression}: "{seg["text"][:40]}..."')
-            generate_segment_audio(seg['text'], mp3_path, expression)
+            print(f'[AudioGenerator] [{expression}] "{seg["text"][:45]}..."')
+            generate_segment_audio(seg['text'], mp3_path, expression, temp_dir)
         except Exception as e:
-            print(f'[AudioGenerator] WARNING: TTS failed for segment {i}: {e}')
+            print(f'[AudioGenerator] WARNING: segment {i} failed: {e}')
             continue
 
         try:
