@@ -101,9 +101,13 @@ def extract_speech_segments(manifest):
 
 async def generate_segment_audio(text, mp3_path, expression):
     """Helper to generate a single segment using edge-tts."""
-    pitch, rate = VOICE_MAP.get(expression, VOICE_MAP['IDLE'])
-    communicate = edge_tts.Communicate(text, DEFAULT_VOICE, pitch=pitch, rate=rate)
+    # Temporarily removed pitch/rate to debug 403 Forbidden error
+    # pitch, rate = VOICE_MAP.get(expression, VOICE_MAP['IDLE'])
+    
+    communicate = edge_tts.Communicate(text, DEFAULT_VOICE)
     await communicate.save(mp3_path)
+    # Small delay to avoid rate limiting
+    await asyncio.sleep(0.5)
 
 
 def build_audio_track(manifest, temp_dir):

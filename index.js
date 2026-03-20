@@ -275,12 +275,12 @@ async function main() {
     // ─── 4. YouTube Upload ───
     log('[4/4] Uploading to YouTube...');
     
-    const ytTitle = metadata?.title || `🔥 ${rawTitle}`;
-    const ytDesc = metadata?.description || `Auto-generated analysis of ${rawTitle}.`;
-    let ytTags = metadata?.hashtags || ['Trending', sourceType, 'Shorts'];
+    let ytTitle = (metadata?.title || `🔥 ${rawTitle}`).replace(/#Shorts/gi, '').trim();
+    let ytDesc = (metadata?.description || `Top news analysis of ${rawTitle}.`).replace(/#(AI|Automation)/gi, '').trim();
+    let ytTags = metadata?.hashtags || ['Trending', sourceType];
     
-    // Safety filter to remove unwanted tags
-    ytTags = ytTags.filter(t => !['#AI', '#Automation', 'AI', 'Automation'].includes(t.replace('#', '')));
+    // Safety filter for tags
+    ytTags = ytTags.filter(t => !['#AI', '#Automation', 'AI', 'Automation', '#Shorts', 'Shorts'].includes(t.replace('#', '')));
 
     await youtubeService.uploadVideo(videoPath, {
       title: ytTitle,
