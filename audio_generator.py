@@ -1,0 +1,163 @@
+#!/usr/bin/env python3
+"""
+Audio Generator - Produces TTS audio synchronized to the frame manifest.
+
+Flow:
+  1. Extract speech segments from the manifest (group consecutive subVisible frames).
+  2. Generate a gTTS .mp3 for each segment.
+  3. Composite all clips at their correct timestamps → one AudioClip matching
+     the video duration.
+"""
+
+import os
+import tempfile
+from gtts import gTTS
+from moviepy import AudioFileClip, CompositeAudioClip
+
+
+def extract_speech_segments(manifest):
+    """
+    Parse manifest frames into a flat list of speech segments.
+
+    Each segment is a dict:
+        { 'text': str, 'start_time': float, 'end_time': float }
+
+    Consecutive frames sharing the same non-empty text are merged into one
+    segment. Silence frames (subVisible=False or empty text) produce gaps
+    between segments.
+    """
+    fps = manifest['fps']
+    frames = manifest['frames']
+    segments = []
+
+    current_text = None
+    start_frame = None
+
+    for frame_data in frames:
+        text = frame_data.get('text', '').strip()
+        visible = frame_data.get('subVisible', False)
+        frame_idx = frame_data['frame']
+
+        if visible and text:
+            if text != current_text:
+                # Flush the previous segment
+                if current_text is not None:
+                    segments.append({
+                        'text': current_text,
+                        'start_time': start_frame / fps,
+                        'end_time': frame_idx / fps,
+                    })
+                current_text = text
+                start_frame = frame_idx
+        else:
+            # Silence frame — flush any open segment
+            if current_text is not None:
+                segments.append({
+                    'text': current_text,
+                    'start_time': start_frame / fps,
+                    'end_time': frame_idx / fps,
+                })
+                current_text = None
+                start_frame = None
+
+    # Flush anything still open at the end
+    if current_text is not None:
+        total_frames = manifest['totalFrames']
+        segments.append({
+            'text': current_text,
+            'start_time': start_frame / fps,
+            'end_time': total_frames / fps,
+        })
+
+    return segments
+
+
+def build_audio_track(manifest, temp_dir, lang='en'):
+    """
+    Generate TTS audio for all speech segments in the manifest and composite
+    them into a single AudioClip whose duration matches the video.
+
+    Args:
+        manifest (dict): Loaded manifest.json dict.
+        temp_dir (str): Directory to write temporary .mp3 files. Must be
+                        writable and outside any cloud-sync folder.
+        lang (str): gTTS language code (default 'en').
+
+    Returns:
+        CompositeAudioClip | None: Combined audio track, or None if there
+                                   are no speech segments.
+    """
+    fps = manifest['fps']
+    total_duration = manifest['totalFrames'] / fps
+
+    segments = extract_speech_segments(manifest)
+    if not segments:
+        print('[AudioGenerator] No speech segments found.')
+        return None
+
+    print(f'[AudioGenerator] Generating TTS for {len(segments)} segment(s)...')
+
+    audio_clips = []
+
+    for i, seg in enumerate(segments):
+        mp3_path = os.path.join(temp_dir, f'seg_{i:04d}.mp3')
+        seg_duration = seg['end_time'] - seg['start_time']
+
+        # Generate TTS
+        try:
+            print(f'[AudioGenerator] Generating TTS for: "{seg["text"][:30]}..."')
+            tts = gTTS(text=seg['text'], lang=lang, slow=False)
+            tts.save(mp3_path)
+            print(f'[AudioGenerator] Saved: {mp3_path}')
+        except Exception as e:
+            print(f'[AudioGenerator] WARNING: TTS failed for segment {i}: {e}')
+            continue
+
+        # Load audio clip and position it at the right timestamp
+        try:
+            clip = AudioFileClip(mp3_path)
+
+            # If TTS is longer than the allocated window, trim it so it
+            # doesn't bleed into the next segment.
+            if clip.duration > seg_duration:
+                clip = clip.subclipped(0, seg_duration)
+
+            clip = clip.with_start(seg['start_time'])
+            audio_clips.append(clip)
+        except Exception as e:
+            print(f'[AudioGenerator] WARNING: Could not load mp3 for segment {i}: {e}')
+
+    if not audio_clips:
+        print('[AudioGenerator] No audio clips generated.')
+        return None
+
+    print(f'[AudioGenerator] Compositing {len(audio_clips)} clip(s) into {total_duration:.2f}s audio track...')
+    composite = CompositeAudioClip(audio_clips)
+    return composite
+
+
+def main():
+    import sys
+    import json
+    if len(sys.argv) != 3:
+        print("Usage: python audio_generator.py <manifest.json> <output_audio.mp3>")
+        sys.exit(1)
+
+    manifest_path = sys.argv[1]
+    output_path = sys.argv[2]
+
+    with open(manifest_path, 'r') as f:
+        manifest = json.load(f)
+
+    # Use a real temp directory for segments
+    with tempfile.TemporaryDirectory() as temp_dir:
+        audio = build_audio_track(manifest, temp_dir)
+        if audio:
+            audio.write_audiofile(output_path, fps=44100, verbose=False, logger=None)
+            print(f'[AudioGenerator] Success: {output_path}')
+        else:
+            print('[AudioGenerator] No audio segments to write.')
+
+
+if __name__ == '__main__':
+    main()
