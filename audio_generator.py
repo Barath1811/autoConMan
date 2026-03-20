@@ -11,29 +11,8 @@ Flow:
 
 import os
 import tempfile
-import asyncio
-import edge_tts
+from gtts import gTTS
 from moviepy import AudioFileClip, CompositeAudioClip
-
-
-# Map expressions to edge-tts voice parameters
-# format: (pitch, rate)
-VOICE_MAP = {
-    'HAPPY': ('+5Hz', '+10%'),
-    'LAUGHING': ('+8Hz', '+20%'),
-    'SAD': ('-5Hz', '-15%'),
-    'ANGRY': ('-3Hz', '+5%'),
-    'SURPRISED': ('+10Hz', '+10%'),
-    'IDLE': ('+0Hz', '+0%'),
-    'THINK': ('-2Hz', '-5%'),
-    'WAVING': ('+2Hz', '+0%'),
-}
-
-def get_env_str(name, default):
-    val = os.getenv(name, '').strip()
-    return val if val else default
-
-DEFAULT_VOICE = get_env_str('DEFAULT_VOICE', 'en-US-ChristopherNeural')
 
 
 def extract_speech_segments(manifest):
@@ -99,15 +78,10 @@ def extract_speech_segments(manifest):
     return segments
 
 
-async def generate_segment_audio(text, mp3_path, expression):
-    """Helper to generate a single segment using edge-tts."""
-    # Temporarily removed pitch/rate to debug 403 Forbidden error
-    # pitch, rate = VOICE_MAP.get(expression, VOICE_MAP['IDLE'])
-    
-    communicate = edge_tts.Communicate(text, DEFAULT_VOICE)
-    await communicate.save(mp3_path)
-    # Small delay to avoid rate limiting
-    await asyncio.sleep(0.5)
+def generate_segment_audio(text, mp3_path):
+    """Generate a single segment using gTTS (Google TTS)."""
+    tts = gTTS(text=text, lang='en', slow=False)
+    tts.save(mp3_path)
 
 
 def build_audio_track(manifest, temp_dir):
@@ -131,7 +105,7 @@ def build_audio_track(manifest, temp_dir):
         print('[AudioGenerator] No speech segments found.')
         return None
 
-    print(f'[AudioGenerator] Generating Neural TTS for {len(segments)} segment(s)...')
+    print(f'[AudioGenerator] Generating TTS for {len(segments)} segment(s)...')
 
     audio_clips = []
 
@@ -139,10 +113,10 @@ def build_audio_track(manifest, temp_dir):
         mp3_path = os.path.join(temp_dir, f'seg_{i:04d}.mp3')
         seg_duration = seg['end_time'] - seg['start_time']
 
-        # Generate Neural TTS
+        # Generate TTS using gTTS
         try:
-            print(f'[AudioGenerator] Generating TTS for: "{seg["text"][:30]}..." ({seg["expression"]})')
-            asyncio.run(generate_segment_audio(seg['text'], mp3_path, seg['expression']))
+            print(f'[AudioGenerator] Generating TTS for: "{seg["text"][:40]}..."')
+            generate_segment_audio(seg['text'], mp3_path)
             print(f'[AudioGenerator] Saved: {mp3_path}')
         except Exception as e:
             print(f'[AudioGenerator] WARNING: TTS failed for segment {i}: {e}')
@@ -184,8 +158,8 @@ def main():
         manifest = json.load(f)
 
     # Use a real temp directory for segments
-    with tempfile.TemporaryDirectory() as temp_dir:
-        audio = build_audio_track(manifest, temp_dir)
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        audio = build_audio_track(manifest, tmp_dir)
         if audio:
             audio.write_audiofile(output_path, fps=44100, verbose=False, logger=None)
             print(f'[AudioGenerator] Success: {output_path}')
