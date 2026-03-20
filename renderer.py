@@ -13,18 +13,29 @@ import random
 import cairo
 from pathlib import Path
 
+def get_env_int(name, default):
+    val = os.getenv(name, '').strip()
+    return int(val) if val.isdigit() else default
+
+def get_env_float(name, default):
+    val = os.getenv(name, '').strip()
+    try:
+        return float(val) if val else default
+    except ValueError:
+        return default
+
 # ============================================================================
 # Configuration
 # ============================================================================
-W = int(os.getenv('RENDER_WIDTH', 640))
-H = int(os.getenv('RENDER_HEIGHT', 480))
-FPS = int(os.getenv('FPS', 24))
-STAR_COUNT = int(os.getenv('STAR_COUNT', 30))
-STAR_SEED = int(os.getenv('STAR_SEED', 42))
+W = get_env_int('RENDER_WIDTH', 640)
+H = get_env_int('RENDER_HEIGHT', 480)
+FPS = get_env_int('FPS', 24)
+STAR_COUNT = get_env_int('STAR_COUNT', 30)
+STAR_SEED = get_env_int('STAR_SEED', 42)
 
 # Scale factor for the alien character.
 # Substantially reduced from 5.0 to 3.5 to ensure antennae stay in frame.
-CHAR_SCALE = float(os.getenv('CHAR_SCALE', 3.5))
+CHAR_SCALE = get_env_float('CHAR_SCALE', 3.5)
 
 # Expression-specific parameters
 EXPR = {
