@@ -11,8 +11,25 @@ Flow:
 
 import os
 import tempfile
-from gtts import gTTS
+import asyncio
+import edge_tts
 from moviepy import AudioFileClip, CompositeAudioClip
+
+
+# Map expressions to edge-tts voice parameters
+# format: (pitch, rate)
+VOICE_MAP = {
+    'HAPPY': ('+5Hz', '+10%'),
+    'LAUGHING': ('+8Hz', '+20%'),
+    'SAD': ('-5Hz', '-15%'),
+    'ANGRY': ('-3Hz', '+5%'),
+    'SURPRISED': ('+10Hz', '+10%'),
+    'IDLE': ('+0Hz', '+0%'),
+    'THINK': ('-2Hz', '-5%'),
+    'WAVING': ('+2Hz', '+0%'),
+}
+
+DEFAULT_VOICE = 'en-US-ChristopherNeural'
 
 
 def extract_speech_segments(manifest):
@@ -20,7 +37,7 @@ def extract_speech_segments(manifest):
     Parse manifest frames into a flat list of speech segments.
 
     Each segment is a dict:
-        { 'text': str, 'start_time': float, 'end_time': float }
+        { 'text': str, 'start_time': float, 'end_time': float, 'expression': str }
 
     Consecutive frames sharing the same non-empty text are merged into one
     segment. Silence frames (subVisible=False or empty text) produce gaps
@@ -32,10 +49,12 @@ def extract_speech_segments(manifest):
 
     current_text = None
     start_frame = None
+    current_expr = 'IDLE'
 
     for frame_data in frames:
         text = frame_data.get('text', '').strip()
         visible = frame_data.get('subVisible', False)
+        expr = frame_data.get('expression', 'IDLE')
         frame_idx = frame_data['frame']
 
         if visible and text:
@@ -46,9 +65,11 @@ def extract_speech_segments(manifest):
                         'text': current_text,
                         'start_time': start_frame / fps,
                         'end_time': frame_idx / fps,
+                        'expression': current_expr
                     })
                 current_text = text
                 start_frame = frame_idx
+                current_expr = expr
         else:
             # Silence frame — flush any open segment
             if current_text is not None:
@@ -56,6 +77,7 @@ def extract_speech_segments(manifest):
                     'text': current_text,
                     'start_time': start_frame / fps,
                     'end_time': frame_idx / fps,
+                    'expression': current_expr
                 })
                 current_text = None
                 start_frame = None
@@ -67,21 +89,27 @@ def extract_speech_segments(manifest):
             'text': current_text,
             'start_time': start_frame / fps,
             'end_time': total_frames / fps,
+            'expression': current_expr
         })
 
     return segments
 
 
-def build_audio_track(manifest, temp_dir, lang='en'):
+async def generate_segment_audio(text, mp3_path, expression):
+    """Helper to generate a single segment using edge-tts."""
+    pitch, rate = VOICE_MAP.get(expression, VOICE_MAP['IDLE'])
+    communicate = edge_tts.Communicate(text, DEFAULT_VOICE, pitch=pitch, rate=rate)
+    await communicate.save(mp3_path)
+
+
+def build_audio_track(manifest, temp_dir):
     """
     Generate TTS audio for all speech segments in the manifest and composite
     them into a single AudioClip whose duration matches the video.
 
     Args:
         manifest (dict): Loaded manifest.json dict.
-        temp_dir (str): Directory to write temporary .mp3 files. Must be
-                        writable and outside any cloud-sync folder.
-        lang (str): gTTS language code (default 'en').
+        temp_dir (str): Directory to write temporary .mp3 files.
 
     Returns:
         CompositeAudioClip | None: Combined audio track, or None if there
@@ -95,7 +123,7 @@ def build_audio_track(manifest, temp_dir, lang='en'):
         print('[AudioGenerator] No speech segments found.')
         return None
 
-    print(f'[AudioGenerator] Generating TTS for {len(segments)} segment(s)...')
+    print(f'[AudioGenerator] Generating Neural TTS for {len(segments)} segment(s)...')
 
     audio_clips = []
 
@@ -103,11 +131,10 @@ def build_audio_track(manifest, temp_dir, lang='en'):
         mp3_path = os.path.join(temp_dir, f'seg_{i:04d}.mp3')
         seg_duration = seg['end_time'] - seg['start_time']
 
-        # Generate TTS
+        # Generate Neural TTS
         try:
-            print(f'[AudioGenerator] Generating TTS for: "{seg["text"][:30]}..."')
-            tts = gTTS(text=seg['text'], lang=lang, slow=False)
-            tts.save(mp3_path)
+            print(f'[AudioGenerator] Generating TTS for: "{seg["text"][:30]}..." ({seg["expression"]})')
+            asyncio.run(generate_segment_audio(seg['text'], mp3_path, seg['expression']))
             print(f'[AudioGenerator] Saved: {mp3_path}')
         except Exception as e:
             print(f'[AudioGenerator] WARNING: TTS failed for segment {i}: {e}')
@@ -117,8 +144,7 @@ def build_audio_track(manifest, temp_dir, lang='en'):
         try:
             clip = AudioFileClip(mp3_path)
 
-            # If TTS is longer than the allocated window, trim it so it
-            # doesn't bleed into the next segment.
+            # If TTS is slightly longer than the allocated window, trim it
             if clip.duration > seg_duration:
                 clip = clip.subclipped(0, seg_duration)
 
