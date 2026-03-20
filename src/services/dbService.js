@@ -13,13 +13,15 @@ const DriveFileLogSchema = new mongoose.Schema({
 const DriveFileLog = mongoose.model('DriveFileLog', DriveFileLogSchema);
 
 class DBService {
-  constructor(connectionString) {
+  constructor(connectionString, dbName) {
     this.connectionString = connectionString;
+    this.dbName = dbName;
   }
 
   async connect() {
     try {
       await mongoose.connect(this.connectionString, {
+        dbName: this.dbName,
         serverApi: { version: '1', strict: true, deprecationErrors: true }
       });
     } catch (error) {
