@@ -8,32 +8,38 @@ class AIService {
     });
   }
 
-  async generateScript(contentArray) {
+  async generateScript(contentArray, source = 'DOC') {
+    const isResearch = source === 'RESEARCH';
+    const today = new Date().toISOString().split('T')[0];
+
     const prompt = `
       You are a professional scriptwriter creating a video script with facial expressions and emotions.
-      Convert the following document content into an engaging video script where EACH LINE follows this exact format:
+      ${isResearch
+        ? `Synthesize this raw news research into a cohesive narrative for today (${today}), then convert it into a script.`
+        : "Convert the following document content into an engaging video script."}
       
+      EACH LINE of the script MUST follow this exact format:
       [EXPRESSION] Spoken text
       
       WHERE EXPRESSION is one of: IDLE, HAPPY, SAD, ANGRY, SURPRISED, LAUGHING, WAVING, THINK
       
       Rules:
-      1. Each line must start with [EXPRESSION] followed by the spoken dialogue
+      1. Each line must start with [EXPRESSION] followed by the spoken dialogue.
       2. Match facial expressions to the emotional tone of the text:
-         - IDLE: Neutral resting state, use for transitions or steady information.
-         - HAPPY: Lifted brows, use for positive, welcoming, or encouraging content.
-         - SAD: Drooped brows, use for serious, unfortunate, or empathetic moments.
-         - ANGRY: Brows in a V, use for critical, frustrated, or intense statements.
-         - SURPRISED: Brows high, eyes wide, use for unexpected or shocking news.
-         - LAUGHING: Squinting eyes, use for humorous or very joyful moments.
-         - WAVING: Use for friendly greetings or goodbyes.
-         - THINK: Pupils up, asymmetric brows, use for questioning, analyzing, or wondering.
-      3. Keep dialogue natural and concise
-      4. Each line should represent 1-3 seconds of speech (roughly 3-8 words)
+         - IDLE: Neutral resting state.
+         - HAPPY: Positive, welcoming, or encouraging content.
+         - SAD: Serious, unfortunate, or empathetic moments.
+         - ANGRY: Critical, frustrated, or intense statements.
+         - SURPRISED: Unexpected or shocking news.
+         - LAUGHING: Humorous or very joyful moments.
+         - WAVING: Greetings or goodbyes.
+         - THINK: Questioning, analyzing, or wondering.
+      3. Keep dialogue natural and concise.
+      4. Each line should represent 1-3 seconds of speech (roughly 3-8 words).
+      ${isResearch ? "5. Focus on the most important facts and create a clear story from the research." : ""}
       
-      DO NOT include markdown headers, bullet points, or any formatting other than [EXPRESSION] markers.
-      DO NOT add stage directions or narrative text.
-      ONLY output script lines in the format above using EXACTLY the 8 expressions listed.
+      DO NOT include markdown, headers, bullet points, or stage directions.
+      ONLY output script lines in the format above.
       
       Content:
       ${contentArray.join('\n\n')}
@@ -44,9 +50,42 @@ class AIService {
     try {
       const result = await this.model.generateContent(prompt);
       const response = await result.response;
-      return response.text();
+      return response.text().trim();
     } catch (error) {
-      throw new Error(`Gemini API Error: ${error.message}`);
+      throw new Error(`AI Script Generation Error: ${error.message}`);
+    }
+  }
+
+  async generateMetadata(script, sourceType) {
+    const prompt = `
+      Analyze this video script and generate SEO metadata.
+      SOURCE TYPE: ${sourceType}
+      
+      METADATA RULES:
+      1. TITLE: Engaging format "[Emoji] [Short Topic] [Hook] #Shorts". Max 100 chars.
+      2. DESCRIPTION: A natural 2-3 sentence summary of the video. If RESEARCH source, mention "top news analysis".
+      3. HASHTAGS: Top 5-10 relevant tags including #AI, #Automation, and topic-specific entities.
+      
+      Output ONLY a JSON object:
+      {
+        "title": "...",
+        "description": "...",
+        "hashtags": ["#tag1", "#tag2", ...]
+      }
+      
+      SCRIPT:
+      ${script}
+    `;
+
+    try {
+      const result = await this.model.generateContent(prompt);
+      const output = (await result.response).text().trim();
+      // Basic JSON cleanup if AI adds markdown blocks
+      const cleanedJson = output.replace(/```json|```/g, '').trim();
+      return JSON.parse(cleanedJson);
+    } catch (error) {
+      console.warn(`[AIService] Metadata parsing failed. Falling back to defaults.`);
+      return null;
     }
   }
 }

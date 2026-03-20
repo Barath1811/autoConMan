@@ -11,6 +11,16 @@ const DriveFileLogSchema = new mongoose.Schema({
 });
 
 const DriveFileLog = mongoose.model('DriveFileLog', DriveFileLogSchema);
+ 
+const TrendLogSchema = new mongoose.Schema({
+  title: { type: String, required: true, unique: true },
+  description: { type: String },
+  thumbnail: { type: String },
+  sourceUrls: [{ type: String }],
+  processedAt: { type: Date, default: Date.now },
+});
+
+const TrendLog = mongoose.model('TrendLog', TrendLogSchema);
 
 class DBService {
   constructor(connectionString, dbName) {
@@ -70,6 +80,32 @@ class DBService {
         { upsert: true }
       );
     }
+  }
+
+  async isTrendProcessed(title) {
+    const oneYearAgo = new Date();
+    oneYearAgo.setFullYear(oneYearAgo.getFullYear() - 1);
+
+    const record = await TrendLog.findOne({
+      title: { $regex: new RegExp(`^${title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') },
+      processedAt: { $gte: oneYearAgo }
+    });
+    return !!record;
+  }
+
+  async saveTrend(trendData) {
+    await TrendLog.updateOne(
+      { title: trendData.title },
+      {
+        $set: {
+          description: trendData.description,
+          thumbnail: trendData.thumbnail,
+          sourceUrls: trendData.sourceUrls,
+          processedAt: new Date(),
+        },
+      },
+      { upsert: true }
+    );
   }
 }
 
