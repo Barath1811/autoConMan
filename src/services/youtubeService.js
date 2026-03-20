@@ -48,6 +48,21 @@ class YouTubeService {
     console.log(`  ✓ URL: https://www.youtube.com/watch?v=${response.data.id}`);
     return response.data;
   }
+  async setThumbnail(videoId, thumbnailPath) {
+    try {
+      await this.youtube.thumbnails.set({
+        videoId,
+        media: {
+          mimeType: 'image/png',
+          body: fs.createReadStream(thumbnailPath),
+        },
+      });
+      console.log(`  ✓ Thumbnail set for video: ${videoId}`);
+    } catch (error) {
+      // Thumbnail upload requires a verified channel — gracefully skip if not verified
+      console.warn(`  ⚠ Thumbnail upload skipped: ${error.message}`);
+    }
+  }
 }
 
 module.exports = YouTubeService;

@@ -272,6 +272,27 @@ async function main() {
     await generateVideo(scriptPath, videoPath);
     fs.unlinkSync(scriptPath);
 
+    // ─── 3.5: Generate Thumbnail ───
+    log('  → Generating AI thumbnail...');
+    const thumbnailData = await aiService.generateThumbnailData(script);
+    const thumbnailPath = path.join(outputDir, `${safeName}_thumbnail.png`);
+    
+    const thumbResult = spawnSync(getPythonCmd(), [
+      path.join(__dirname, 'thumbnail_generator.py'),
+      thumbnailData.theme,
+      thumbnailData.twoWordTitle,
+      thumbnailData.characterPose,
+      thumbnailData.accentHex,
+      thumbnailPath,
+    ], { stdio: 'inherit', timeout: 60_000 });
+    
+    const thumbnailReady = thumbResult.status === 0 && fs.existsSync(thumbnailPath);
+    if (thumbnailReady) {
+      log(`  ✓ Thumbnail ready: ${thumbnailPath}`);
+    } else {
+      log('  ⚠ Thumbnail generation failed — uploading without custom thumbnail.');
+    }
+
     // ─── 4. YouTube Upload ───
     log('[4/4] Uploading to YouTube...');
     
@@ -282,11 +303,16 @@ async function main() {
     // Safety filter for tags
     ytTags = ytTags.filter(t => !['#AI', '#Automation', 'AI', 'Automation', '#Shorts', 'Shorts'].includes(t.replace('#', '')));
 
-    await youtubeService.uploadVideo(videoPath, {
+    const videoData = await youtubeService.uploadVideo(videoPath, {
       title: ytTitle,
       description: `${ytDesc}\n\nTags: ${ytTags.join(' ')}`,
       tags: ytTags.map(t => t.replace('#', '')),
     });
+
+    // Set custom thumbnail if available
+    if (thumbnailReady && videoData?.id) {
+      await youtubeService.setThumbnail(videoData.id, thumbnailPath);
+    }
 
     // ─── 5. Finalize Log ───
     if (sourceType === 'DOC') {

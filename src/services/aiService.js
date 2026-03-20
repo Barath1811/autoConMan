@@ -88,6 +88,41 @@ class AIService {
       return null;
     }
   }
+  async generateThumbnailData(script) {
+    const prompt = `
+      Analyze this video script and return ONLY a JSON object for thumbnail design.
+
+      VALID THEMES: SPORTS, FINANCE, POLITICS, DISASTER, ENTERTAINMENT, TECHNOLOGY, DEFAULT
+      VALID POSES: HAPPY, SAD, ANGRY, SURPRISED, LAUGHING, WAVING, THINK, IDLE
+
+      RULES:
+      1. theme: Best matching category for the topic.
+      2. twoWordTitle: A punchy 2-word ALL-CAPS title for the thumbnail (no punctuation).
+      3. characterPose: The emotion that best matches the topic's tone.
+      4. accentHex: A vivid, theme-matching accent color (hex code).
+
+      Output ONLY valid JSON, nothing else:
+      {
+        "theme": "SPORTS",
+        "twoWordTitle": "PITCH WAR",
+        "characterPose": "HAPPY",
+        "accentHex": "#00C853"
+      }
+
+      SCRIPT:
+      ${script.slice(0, 1000)}
+    `;
+
+    try {
+      const result = await this.model.generateContent(prompt);
+      const output = (await result.response).text().trim();
+      const cleanedJson = output.replace(/```json|```/g, '').trim();
+      return JSON.parse(cleanedJson);
+    } catch (error) {
+      console.warn('[AIService] Thumbnail data generation failed. Using defaults.');
+      return { theme: 'DEFAULT', twoWordTitle: 'BREAKING NEWS', characterPose: 'IDLE', accentHex: '#7C4DFF' };
+    }
+  }
 }
 
 module.exports = AIService;
