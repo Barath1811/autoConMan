@@ -62,9 +62,9 @@ class AIService {
       SOURCE TYPE: ${sourceType}
       
       METADATA RULES:
-      1. TITLE: Engaging format "[Emoji] [Short Topic] [Hook] #Shorts". Max 100 chars.
+      1. TITLE: Engaging format "[Emoji] [Short Topic] [Hook]". NO #Shorts in title. Max 100 chars.
       2. DESCRIPTION: A natural 2-3 sentence summary of the video. If RESEARCH source, mention "top news analysis".
-      3. HASHTAGS: Top 5-10 relevant tags including #AI, #Automation, and topic-specific entities.
+      3. HASHTAGS: Top 5-10 relevant tags. DO NOT include #AI or #Automation.
       
       Output ONLY a JSON object:
       {
