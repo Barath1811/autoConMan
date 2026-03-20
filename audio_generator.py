@@ -2,47 +2,46 @@
 """
 Audio Generator - Produces TTS audio synchronized to the frame manifest.
 
+Uses Piper TTS (free, offline neural voice) for natural-sounding speech.
+Expression-based pitch/tempo modulation applied via FFmpeg post-processing.
+Falls back to gTTS if Piper model is not available.
+
 Flow:
-  1. Extract speech segments from the manifest (group consecutive subVisible frames).
-  2. Generate a gTTS .mp3 for each segment.
-  3. Composite all clips at their correct timestamps → one AudioClip matching
-     the video duration.
+  1. Extract speech segments from the manifest.
+  2. Generate TTS per segment using Piper (or gTTS fallback).
+  3. Apply FFmpeg pitch/tempo filter per expression.
+  4. Composite all clips at their correct timestamps → one AudioClip.
 """
 
 import os
+import wave
+import json
 import tempfile
-import asyncio
-import edge_tts
+import subprocess
+from pathlib import Path
 from moviepy import AudioFileClip, CompositeAudioClip
 
 
-# Map expressions to edge-tts voice parameters
-# format: (pitch, rate)
-VOICE_MAP = {
-    'HAPPY': ('+5Hz', '+10%'),
-    'LAUGHING': ('+8Hz', '+20%'),
-    'SAD': ('-5Hz', '-15%'),
-    'ANGRY': ('-3Hz', '+5%'),
-    'SURPRISED': ('+10Hz', '+10%'),
-    'IDLE': ('+0Hz', '+0%'),
-    'THINK': ('-2Hz', '-5%'),
-    'WAVING': ('+2Hz', '+0%'),
-}
+# Piper voice model path — downloaded in cron.yml before npm start
+PIPER_MODEL_PATH = os.getenv('PIPER_MODEL_PATH', '/tmp/piper-models/voice.onnx')
 
-DEFAULT_VOICE = os.getenv('DEFAULT_VOICE', 'en-US-ChristopherNeural')
+# Expression-based FFmpeg modulation
+# pitch_semitones: positive = higher pitch, negative = lower
+# tempo: 1.0 = normal, >1 = faster, <1 = slower
+VOICE_MAP = {
+    'HAPPY':     {'pitch': +2.0, 'tempo': 1.08},
+    'LAUGHING':  {'pitch': +3.0, 'tempo': 1.15},
+    'SAD':       {'pitch': -2.5, 'tempo': 0.88},
+    'ANGRY':     {'pitch': -1.0, 'tempo': 1.12},
+    'SURPRISED': {'pitch': +3.5, 'tempo': 1.05},
+    'WAVING':    {'pitch': +1.5, 'tempo': 1.04},
+    'THINK':     {'pitch': -1.0, 'tempo': 0.92},
+    'IDLE':      {'pitch':  0.0, 'tempo': 1.00},
+}
 
 
 def extract_speech_segments(manifest):
-    """
-    Parse manifest frames into a flat list of speech segments.
-
-    Each segment is a dict:
-        { 'text': str, 'start_time': float, 'end_time': float, 'expression': str }
-
-    Consecutive frames sharing the same non-empty text are merged into one
-    segment. Silence frames (subVisible=False or empty text) produce gaps
-    between segments.
-    """
+    """Parse manifest frames into a flat list of speech segments."""
     fps = manifest['fps']
     frames = manifest['frames']
     segments = []
@@ -59,7 +58,6 @@ def extract_speech_segments(manifest):
 
         if visible and text:
             if text != current_text:
-                # Flush the previous segment
                 if current_text is not None:
                     segments.append({
                         'text': current_text,
@@ -71,7 +69,6 @@ def extract_speech_segments(manifest):
                 start_frame = frame_idx
                 current_expr = expr
         else:
-            # Silence frame — flush any open segment
             if current_text is not None:
                 segments.append({
                     'text': current_text,
@@ -82,7 +79,6 @@ def extract_speech_segments(manifest):
                 current_text = None
                 start_frame = None
 
-    # Flush anything still open at the end
     if current_text is not None:
         total_frames = manifest['totalFrames']
         segments.append({
@@ -95,59 +91,138 @@ def extract_speech_segments(manifest):
     return segments
 
 
-async def generate_segment_audio(text, mp3_path, expression):
-    """Helper to generate a single segment using edge-tts."""
-    pitch, rate = VOICE_MAP.get(expression, VOICE_MAP['IDLE'])
-    communicate = edge_tts.Communicate(text, DEFAULT_VOICE, pitch=pitch, rate=rate)
-    await communicate.save(mp3_path)
+def generate_with_piper(text, wav_path):
+    """
+    Generate WAV audio using Piper TTS (offline neural voice).
+    Returns True on success, False if model not available.
+    """
+    if not Path(PIPER_MODEL_PATH).exists():
+        return False
+
+    try:
+        from piper.voice import PiperVoice
+
+        voice = PiperVoice.load(PIPER_MODEL_PATH, use_cuda=False)
+        with wave.open(wav_path, 'w') as wav_file:
+            voice.synthesize(text, wav_file)
+        return True
+    except Exception as e:
+        print(f'[AudioGenerator] Piper error: {e}')
+        return False
+
+
+def generate_with_gtts_fallback(text, wav_path):
+    """Fallback: gTTS + convert to WAV via FFmpeg."""
+    from gtts import gTTS
+    import tempfile
+
+    tmp_mp3 = wav_path.replace('.wav', '_gtts.mp3')
+    tts = gTTS(text=text, lang='en', slow=False)
+    tts.save(tmp_mp3)
+
+    # Convert mp3 to wav for uniform pipeline
+    cmd = ['ffmpeg', '-y', '-i', tmp_mp3, wav_path]
+    subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    if os.path.exists(tmp_mp3):
+        os.remove(tmp_mp3)
+
+
+def apply_expression_filter(input_wav, output_mp3, expression):
+    """
+    Apply pitch shift + tempo change via FFmpeg based on expression.
+    """
+    params = VOICE_MAP.get(expression, VOICE_MAP['IDLE'])
+    semitones = params['pitch']
+    tempo = params['tempo']
+
+    if semitones == 0.0 and tempo == 1.0:
+        # No modulation — direct convert to mp3
+        cmd = ['ffmpeg', '-y', '-i', input_wav, output_mp3]
+        subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return
+
+    # Frequency ratio for semitone shift
+    pitch_factor = 2 ** (semitones / 12.0)
+    base_rate = 22050
+    resampled_rate = int(base_rate * pitch_factor)
+
+    # atempo correction: compensate speed introduced by pitch shift, then apply tempo
+    correct_tempo = tempo / pitch_factor
+
+    # Clamp atempo to valid range [0.5, 2.0] using chain
+    atempo_filters = []
+    remaining = correct_tempo
+    while remaining > 2.0:
+        atempo_filters.append('atempo=2.0')
+        remaining /= 2.0
+    while remaining < 0.5:
+        atempo_filters.append('atempo=0.5')
+        remaining *= 2.0
+    atempo_filters.append(f'atempo={remaining:.4f}')
+
+    filter_str = f'asetrate={resampled_rate},aresample={base_rate},' + ','.join(atempo_filters)
+
+    cmd = ['ffmpeg', '-y', '-i', input_wav, '-af', filter_str, output_mp3]
+    try:
+        subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except subprocess.CalledProcessError:
+        # On failure, convert without filter
+        cmd = ['ffmpeg', '-y', '-i', input_wav, output_mp3]
+        subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def generate_segment_audio(text, mp3_path, expression, temp_dir):
+    """Generate expressive audio for one segment."""
+    wav_path = mp3_path.replace('.mp3', '.wav')
+
+    # Step 1: TTS → WAV
+    success = generate_with_piper(text, wav_path)
+    if not success:
+        print('[AudioGenerator] Piper unavailable — using gTTS fallback.')
+        generate_with_gtts_fallback(text, wav_path)
+
+    # Step 2: Apply FFmpeg expression modulation → MP3
+    apply_expression_filter(wav_path, mp3_path, expression)
+
+    if os.path.exists(wav_path):
+        os.remove(wav_path)
 
 
 def build_audio_track(manifest, temp_dir):
     """
-    Generate TTS audio for all speech segments in the manifest and composite
-    them into a single AudioClip whose duration matches the video.
-
-    Args:
-        manifest (dict): Loaded manifest.json dict.
-        temp_dir (str): Directory to write temporary .mp3 files.
-
-    Returns:
-        CompositeAudioClip | None: Combined audio track, or None if there
-                                   are no speech segments.
+    Generate TTS audio for all speech segments and composite into one AudioClip.
     """
-    fps = manifest['fps']
-    total_duration = manifest['totalFrames'] / fps
+    fps = manifest.get('fps', 24)
+    total_duration = manifest.get('totalFrames', 0) / fps
 
     segments = extract_speech_segments(manifest)
     if not segments:
         print('[AudioGenerator] No speech segments found.')
         return None
 
-    print(f'[AudioGenerator] Generating Neural TTS for {len(segments)} segment(s)...')
+    using_piper = Path(PIPER_MODEL_PATH).exists()
+    print(f'[AudioGenerator] TTS engine: {"Piper (Neural)" if using_piper else "gTTS (fallback)"}')
+    print(f'[AudioGenerator] Generating {len(segments)} segment(s)...')
 
     audio_clips = []
 
     for i, seg in enumerate(segments):
         mp3_path = os.path.join(temp_dir, f'seg_{i:04d}.mp3')
         seg_duration = seg['end_time'] - seg['start_time']
+        expression = seg['expression']
 
-        # Generate Neural TTS
         try:
-            print(f'[AudioGenerator] Generating TTS for: "{seg["text"][:30]}..." ({seg["expression"]})')
-            asyncio.run(generate_segment_audio(seg['text'], mp3_path, seg['expression']))
-            print(f'[AudioGenerator] Saved: {mp3_path}')
+            print(f'[AudioGenerator] [{expression}] "{seg["text"][:45]}..."')
+            generate_segment_audio(seg['text'], mp3_path, expression, temp_dir)
         except Exception as e:
-            print(f'[AudioGenerator] WARNING: TTS failed for segment {i}: {e}')
+            print(f'[AudioGenerator] WARNING: segment {i} failed: {e}')
             continue
 
-        # Load audio clip and position it at the right timestamp
         try:
             clip = AudioFileClip(mp3_path)
-
-            # If TTS is slightly longer than the allocated window, trim it
             if clip.duration > seg_duration:
                 clip = clip.subclipped(0, seg_duration)
-
             clip = clip.with_start(seg['start_time'])
             audio_clips.append(clip)
         except Exception as e:
@@ -158,13 +233,11 @@ def build_audio_track(manifest, temp_dir):
         return None
 
     print(f'[AudioGenerator] Compositing {len(audio_clips)} clip(s) into {total_duration:.2f}s audio track...')
-    composite = CompositeAudioClip(audio_clips)
-    return composite
+    return CompositeAudioClip(audio_clips)
 
 
 def main():
     import sys
-    import json
     if len(sys.argv) != 3:
         print("Usage: python audio_generator.py <manifest.json> <output_audio.mp3>")
         sys.exit(1)
@@ -175,9 +248,8 @@ def main():
     with open(manifest_path, 'r') as f:
         manifest = json.load(f)
 
-    # Use a real temp directory for segments
-    with tempfile.TemporaryDirectory() as temp_dir:
-        audio = build_audio_track(manifest, temp_dir)
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        audio = build_audio_track(manifest, tmp_dir)
         if audio:
             audio.write_audiofile(output_path, fps=44100, verbose=False, logger=None)
             print(f'[AudioGenerator] Success: {output_path}')

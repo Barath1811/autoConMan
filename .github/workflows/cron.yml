@@ -2,7 +2,8 @@ name: Fetch Drive Files Cron
 
 on:
   schedule:
-    # Runs every day at 19:00 IST (13:30 UTC)
+    # Runs at 8:00 AM IST (02:30 UTC) and 7:00 PM IST (13:30 UTC)
+    - cron: '30 2 * * *'
     - cron: '30 13 * * *'
   workflow_dispatch: # Allows manual triggering from the GitHub UI for testing
 
@@ -39,6 +40,30 @@ jobs:
 
       - name: Install Python dependencies
         run: pip install -r requirements.txt
+
+      - name: Download Piper Voice Model
+        run: |
+          mkdir -p /tmp/piper-models
+          # en_US-ryan-high: natural expressive male voice
+          curl -L -o /tmp/piper-models/voice.onnx \
+            "https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/ryan/high/en_US-ryan-high.onnx"
+          curl -L -o /tmp/piper-models/voice.onnx.json \
+            "https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/ryan/high/en_US-ryan-high.onnx.json"
+          echo "Voice model downloaded: $(du -sh /tmp/piper-models/)"
+
+      - name: Download Thumbnail Fonts
+        run: |
+          mkdir -p /tmp/thumbnail-fonts
+          BASE="https://github.com/google/fonts/raw/main/ofl"
+          # Each font has a || true so a 404 won't fail the whole step
+          curl -fsSL -o /tmp/thumbnail-fonts/BebasNeue-Regular.ttf   "$BASE/bebasneue/BebasNeue-Regular.ttf" || true
+          curl -fsSL -o /tmp/thumbnail-fonts/RobotoSlab-Bold.ttf     "$BASE/robotoslab/RobotoSlab%5Bwght%5D.ttf" || true
+          curl -fsSL -o /tmp/thumbnail-fonts/PlayfairDisplay-Bold.ttf "$BASE/playfairdisplay/PlayfairDisplay%5Bwght%5D.ttf" || true
+          curl -fsSL -o /tmp/thumbnail-fonts/BlackHanSans-Regular.ttf "$BASE/blackhansans/BlackHanSans-Regular.ttf" || true
+          curl -fsSL -o /tmp/thumbnail-fonts/Pacifico-Regular.ttf    "$BASE/pacifico/Pacifico-Regular.ttf" || true
+          curl -fsSL -o /tmp/thumbnail-fonts/Orbitron-Bold.ttf       "$BASE/orbitron/Orbitron%5Bwght%5D.ttf" || true
+          curl -fsSL -o /tmp/thumbnail-fonts/Oswald-Bold.ttf         "$BASE/oswald/Oswald%5Bwght%5D.ttf" || true
+          echo "Fonts in /tmp/thumbnail-fonts/: $(ls /tmp/thumbnail-fonts/ 2>/dev/null | tr '\n' ' ')"
 
       - name: Run Drive fetcher script
         env:

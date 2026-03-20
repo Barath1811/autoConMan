@@ -254,8 +254,8 @@ async function main() {
     log(`\n[2/4] Drafting script using ${sourceType === 'DOC' ? 'Document' : 'Research'} prompt...`);
     const script = await aiService.generateScript(payload, sourceType);
     
-    log(`  → Analyzing script for metadata...`);
-    const metadata = await aiService.generateMetadata(script, sourceType);
+    log(`  → Analyzing script for metadata and thumbnail design...`);
+    const { metadata, thumbnail: thumbnailData } = await aiService.generateVideoData(script, sourceType);
 
     // ─── 3. Video Production ───
     log('[3/4] Starting video production pipeline...');
@@ -272,18 +272,46 @@ async function main() {
     await generateVideo(scriptPath, videoPath);
     fs.unlinkSync(scriptPath);
 
+    // ─── 3.5: Generate Thumbnail ───
+    log('  → Rendering AI thumbnail...');
+    const thumbnailPath = path.join(outputDir, `${safeName}_thumbnail.png`);
+    
+    const thumbResult = spawnSync(getPythonCmd(), [
+      path.join(__dirname, 'thumbnail_generator.py'),
+      thumbnailData.theme,
+      thumbnailData.twoWordTitle,
+      thumbnailData.characterPose,
+      thumbnailData.accentHex,
+      thumbnailPath,
+    ], { stdio: 'inherit', timeout: 60_000 });
+    
+    const thumbnailReady = thumbResult.status === 0 && fs.existsSync(thumbnailPath);
+    if (thumbnailReady) {
+      log(`  ✓ Thumbnail ready: ${thumbnailPath}`);
+    } else {
+      log('  ⚠ Thumbnail generation failed — uploading without custom thumbnail.');
+    }
+
     // ─── 4. YouTube Upload ───
     log('[4/4] Uploading to YouTube...');
     
-    const ytTitle = metadata?.title || `🔥 ${rawTitle} #Shorts`;
-    const ytDesc = metadata?.description || `Auto-generated analysis of ${rawTitle}.`;
-    const ytTags = metadata?.hashtags || ['AI', 'Automation', 'Trending', sourceType, 'Shorts'];
+    let ytTitle = (metadata?.title || `🔥 ${rawTitle}`).replace(/#Shorts/gi, '').trim();
+    let ytDesc = (metadata?.description || `Top news analysis of ${rawTitle}.`).replace(/#(AI|Automation)/gi, '').trim();
+    let ytTags = metadata?.hashtags || ['Trending', sourceType];
+    
+    // Safety filter for tags
+    ytTags = ytTags.filter(t => !['#AI', '#Automation', 'AI', 'Automation', '#Shorts', 'Shorts'].includes(t.replace('#', '')));
 
-    await youtubeService.uploadVideo(videoPath, {
+    const videoData = await youtubeService.uploadVideo(videoPath, {
       title: ytTitle,
       description: `${ytDesc}\n\nTags: ${ytTags.join(' ')}`,
       tags: ytTags.map(t => t.replace('#', '')),
     });
+
+    // Set custom thumbnail if available
+    if (thumbnailReady && videoData?.id) {
+      await youtubeService.setThumbnail(videoData.id, thumbnailPath);
+    }
 
     // ─── 5. Finalize Log ───
     if (sourceType === 'DOC') {

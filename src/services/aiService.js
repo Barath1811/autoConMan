@@ -56,37 +56,68 @@ class AIService {
     }
   }
 
-  async generateMetadata(script, sourceType) {
+  async generateVideoData(script, sourceType) {
     const prompt = `
-      Analyze this video script and generate SEO metadata.
-      SOURCE TYPE: ${sourceType}
-      
+      Analyze this video script and return a single JSON object containing SEO metadata AND thumbnail design data.
+
       METADATA RULES:
-      1. TITLE: Engaging format "[Emoji] [Short Topic] [Hook] #Shorts". Max 100 chars.
-      2. DESCRIPTION: A natural 2-3 sentence summary of the video. If RESEARCH source, mention "top news analysis".
-      3. HASHTAGS: Top 5-10 relevant tags including #AI, #Automation, and topic-specific entities.
-      
-      Output ONLY a JSON object:
+      1. TITLE: "[Emoji] [Topic] [Hook]" (max 100 chars, NO #Shorts).
+      2. DESCRIPTION: 2-3 sentence summary (NO #AI or #Automation).
+      3. HASHTAGS: 5-10 tags.
+
+      THUMBNAIL RULES:
+      1. theme: One of [SPORTS, FINANCE, POLITICS, DISASTER, ENTERTAINMENT, TECHNOLOGY, DEFAULT].
+      2. twoWordTitle: 2-word ALL-CAPS punchy title.
+      3. characterPose: One of [HAPPY, SAD, ANGRY, SURPRISED, LAUGHING, WAVING, THINK, IDLE].
+      4. accentHex: Vivid hex color matching the theme.
+
+      Output ONLY valid JSON:
       {
-        "title": "...",
-        "description": "...",
-        "hashtags": ["#tag1", "#tag2", ...]
+        "metadata": { "title": "...", "description": "...", "hashtags": ["#tag1", ...] },
+        "thumbnail": { "theme": "...", "twoWordTitle": "...", "characterPose": "...", "accentHex": "..." }
       }
-      
+
       SCRIPT:
-      ${script}
+      ${script.slice(0, 1500)}
     `;
 
-    try {
+    const data = await this._callWithRetry(async () => {
       const result = await this.model.generateContent(prompt);
       const output = (await result.response).text().trim();
-      // Basic JSON cleanup if AI adds markdown blocks
       const cleanedJson = output.replace(/```json|```/g, '').trim();
       return JSON.parse(cleanedJson);
-    } catch (error) {
-      console.warn(`[AIService] Metadata parsing failed. Falling back to defaults.`);
-      return null;
+    });
+
+    return data || {
+      metadata: { title: `🔥 Update: ${new Date().toLocaleDateString()}`, description: 'Trending news analysis.', hashtags: ['#news'] },
+      thumbnail: { theme: 'DEFAULT', twoWordTitle: 'BREAKING NEWS', characterPose: 'IDLE', accentHex: '#7C4DFF' }
+    };
+  }
+
+  async _callWithRetry(fn, attempts = 3, delay = 2000) {
+    for (let i = 0; i < attempts; i++) {
+      try {
+        return await fn();
+      } catch (error) {
+        if (error.message.includes('429') && i < attempts - 1) {
+          console.warn(`[AIService] Quota hit (429). Retrying in ${delay / 1000}s... (Attempt ${i + 1}/${attempts})`);
+          await new Promise(resolve => setTimeout(resolve, delay));
+          delay *= 2; // Exponential backoff
+          continue;
+        }
+        throw error;
+      }
     }
+  }
+
+  async generateScript(payload, source) {
+    return this._callWithRetry(async () => {
+      const isResearch = source === 'RESEARCH';
+      const today = new Date().toISOString().split('T')[0];
+      const prompt = `Generate a video script for ${today} from this: ${payload.join('\n')}. Use [EXPRESSION] format.`;
+      const result = await this.model.generateContent(prompt);
+      return (await result.response).text().trim();
+    });
   }
 }
 
