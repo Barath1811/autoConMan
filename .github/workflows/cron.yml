@@ -2,7 +2,8 @@ name: Fetch Drive Files Cron
 
 on:
   schedule:
-    # Runs every day at 19:00 IST (13:30 UTC)
+    # Runs at 8:00 AM IST (02:30 UTC) and 7:00 PM IST (13:30 UTC)
+    - cron: '30 2 * * *'
     - cron: '30 13 * * *'
   workflow_dispatch: # Allows manual triggering from the GitHub UI for testing
 

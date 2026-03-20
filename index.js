@@ -254,8 +254,8 @@ async function main() {
     log(`\n[2/4] Drafting script using ${sourceType === 'DOC' ? 'Document' : 'Research'} prompt...`);
     const script = await aiService.generateScript(payload, sourceType);
     
-    log(`  → Analyzing script for metadata...`);
-    const metadata = await aiService.generateMetadata(script, sourceType);
+    log(`  → Analyzing script for metadata and thumbnail design...`);
+    const { metadata, thumbnail: thumbnailData } = await aiService.generateVideoData(script, sourceType);
 
     // ─── 3. Video Production ───
     log('[3/4] Starting video production pipeline...');
@@ -273,8 +273,7 @@ async function main() {
     fs.unlinkSync(scriptPath);
 
     // ─── 3.5: Generate Thumbnail ───
-    log('  → Generating AI thumbnail...');
-    const thumbnailData = await aiService.generateThumbnailData(script);
+    log('  → Rendering AI thumbnail...');
     const thumbnailPath = path.join(outputDir, `${safeName}_thumbnail.png`);
     
     const thumbResult = spawnSync(getPythonCmd(), [
