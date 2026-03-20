@@ -3,15 +3,15 @@ const { google } = require('googleapis');
 const fs = require('fs');
 
 class YouTubeService {
-  constructor() {
+  constructor(config) {
     // YouTube requires OAuth2 — service accounts cannot upload videos
     this.oauth2Client = new google.auth.OAuth2(
-      process.env.YOUTUBE_CLIENT_ID,
-      process.env.YOUTUBE_CLIENT_SECRET,
+      config.youtubeClientId,
+      config.youtubeClientSecret,
       'http://localhost:3000/oauth2callback'
     );
     this.oauth2Client.setCredentials({
-      refresh_token: process.env.YOUTUBE_REFRESH_TOKEN,
+      refresh_token: config.youtubeRefreshToken,
     });
     this.youtube = google.youtube({ version: 'v3', auth: this.oauth2Client });
   }

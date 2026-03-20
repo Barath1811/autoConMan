@@ -1,14 +1,14 @@
 const { google } = require('googleapis');
 
 class AuthService {
-  constructor(credentialsStr) {
-    this.credentialsStr = credentialsStr;
+  constructor(config) {
+    this.config = config;
   }
 
   getAuth() {
     let credentials;
     try {
-      credentials = JSON.parse(this.credentialsStr);
+      credentials = JSON.parse(this.config.googleCredentials);
     } catch {
       throw new Error('Authentication Error: GOOGLE_CREDENTIALS is not valid JSON.');
     }

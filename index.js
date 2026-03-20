@@ -12,11 +12,20 @@ const AIService = require('./src/services/aiService');
 const YouTubeService = require('./src/services/youtubeService');
 
 // ─── Constants ────────────────────────────────────────────────────────────────
-const WORDS_PER_SEC = 2.8;
-const FPS = 24;
-const INTRO_DUR = 1.0;   // seconds
-const OUTRO_DUR = 1.0;   // seconds
-const PAUSE_DUR = 0.4;   // seconds between segments
+// ─── Constants ────────────────────────────────────────────────────────────────
+const {
+  WORDS_PER_SEC,
+  FPS,
+  INTRO_DUR,
+  OUTRO_DUR,
+  PAUSE_DUR,
+} = {
+  WORDS_PER_SEC: config.wordsPerSec,
+  FPS: config.fps,
+  INTRO_DUR: config.introDur,
+  OUTRO_DUR: config.outroDur,
+  PAUSE_DUR: config.pauseDur,
+};
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 const log = (msg) => console.log(`[${new Date().toISOString()}] ${msg}`);
@@ -184,11 +193,14 @@ async function generateVideo(scriptPath, outputPath) {
 async function main() {
   validateConfig();
 
-  const auth = new AuthService(config.googleCredentials).getAuth();
+  // Initialize Services
+  const authService = new AuthService(config);
+  const auth = authService.getAuth();
+
   const driveService = new DriveService(auth);
   const docService = new DocService(auth);
-  const aiService = new AIService(config.geminiApiKey);
-  const youtubeService = new YouTubeService();
+  const aiService = new AIService(config);
+  const youtubeService = new YouTubeService(config);
 
   const dbService = new DBService(config.dbConnectionString, config.dbName);
 

@@ -29,7 +29,7 @@ VOICE_MAP = {
     'WAVING': ('+2Hz', '+0%'),
 }
 
-DEFAULT_VOICE = 'en-US-ChristopherNeural'
+DEFAULT_VOICE = os.getenv('DEFAULT_VOICE', 'en-US-ChristopherNeural')
 
 
 def extract_speech_segments(manifest):
