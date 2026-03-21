@@ -656,10 +656,37 @@ def draw_progress(ctx, frame_idx, total_frames, w, h):
     ctx.fill()
 
 
+def render_frame_worker(args):
+    """Worker function to render a single frame."""
+    frame_idx, frame_data, frames_dir, stars = args
+    
+    # Each process gets its own surface/context
+    surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, W, H)
+    ctx = cairo.Context(surface)
+    
+    t = frame_data['frame']
+    mouth_open = frame_data['mouth']
+    expression = frame_data['expression']
+    cx, cy = W / 2, H / 2 + 100
+
+    # Draw layers
+    draw_background(ctx, t, EXPR.get(expression, EXPR['IDLE']), cx, cy, W, H, stars)
+    draw_alien(ctx, t, cx, cy, mouth_open, expression, frame_idx)
+    draw_subtitle(ctx, frame_data, W, H)
+    draw_progress(ctx, frame_idx, frame_data['total_frames'], W, H)
+
+    # Write frame
+    output_file = Path(frames_dir) / f"frame_{frame_idx:06d}.png"
+    surface.write_to_png(str(output_file))
+    return True
+
 # ============================================================================
 # Main renderer loop
 # ============================================================================
 def main(manifest_path, frames_dir):
+    from concurrent.futures import ProcessPoolExecutor
+    import os
+    
     print(f"[Renderer] Loading manifest: {manifest_path}")
     
     with open(manifest_path, 'r') as f:
@@ -672,36 +699,18 @@ def main(manifest_path, frames_dir):
     # Generate stars once
     stars = generate_stars(STAR_COUNT, STAR_SEED, W, H)
 
-    # Create surface
-    surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, W, H)
-    ctx = cairo.Context(surface)
+    # Prepare worker arguments
+    worker_args = [
+        (i, {**f, 'total_frames': total}, frames_dir, stars)
+        for i, f in enumerate(frames)
+    ]
 
-    # Render
-    for i, frame_data in enumerate(frames):
-        if i % 100 == 0:
-            print(f"[Renderer] Rendering frame {i}/{total}")
+    # Use CPU count for max workers
+    max_workers = os.cpu_count() or 4
+    print(f"[Renderer] Rendering with {max_workers} processes...")
 
-        t = frame_data['frame']
-        mouth_open = frame_data['mouth']
-        expression = frame_data['expression']
-        # Lowered cy from H/2 + 60 to H/2 + 100 to provide maximum headroom for antennae.
-        cx, cy = W / 2, H / 2 + 100
-
-        # Draw layers
-        draw_background(ctx, t, EXPR.get(expression, EXPR['IDLE']), cx, cy, W, H, stars)
-        draw_alien(ctx, t, cx, cy, mouth_open, expression, i)
-        draw_subtitle(ctx, frame_data, W, H)
-        draw_progress(ctx, i, total, W, H)
-
-        # Write frame
-        output_file = Path(frames_dir) / f"frame_{i:06d}.png"
-        surface.write_to_png(str(output_file))
-
-        # Clear surface for next frame
-        ctx.set_operator(cairo.OPERATOR_CLEAR)
-        ctx.rectangle(0, 0, W, H)
-        ctx.fill()
-        ctx.set_operator(cairo.OPERATOR_OVER)
+    with ProcessPoolExecutor(max_workers=max_workers) as executor:
+        list(executor.map(render_frame_worker, worker_args))
 
     print(f"[Renderer] Complete: {total} frames rendered")
 

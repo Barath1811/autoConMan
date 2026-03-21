@@ -4,6 +4,9 @@ const path = require('path');
 const os = require('os');
 const { spawnSync } = require('child_process');
 const { config, validateConfig } = require('./src/config/config');
+
+const Logger = require('./src/services/logger');
+const ResourceManager = require('./src/services/resourceManager');
 const AuthService = require('./src/services/authService');
 const DriveService = require('./src/services/driveService');
 const DBService = require('./src/services/dbService');
@@ -12,343 +15,262 @@ const AIService = require('./src/services/aiService');
 const YouTubeService = require('./src/services/youtubeService');
 const TrendService = require('./src/services/trendService');
 
-// ─── Constants ────────────────────────────────────────────────────────────────
-// ─── Constants ────────────────────────────────────────────────────────────────
-const {
-  WORDS_PER_SEC,
-  FPS,
-  INTRO_DUR,
-  OUTRO_DUR,
-  PAUSE_DUR,
-} = {
-  WORDS_PER_SEC: config.wordsPerSec,
-  FPS: config.fps,
-  INTRO_DUR: config.introDur,
-  OUTRO_DUR: config.outroDur,
-  PAUSE_DUR: config.pauseDur,
-};
+class VideoPipeline {
+  constructor(config) {
+    this.config = config;
+    this.resourceManager = new ResourceManager();
+    
+    // Initialize services
+    const authService = new AuthService(config);
+    const auth = authService.getAuth();
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-const log = (msg) => console.log(`[${new Date().toISOString()}] ${msg}`);
-
-function getPythonCmd() {
-  if (process.platform === 'win32') {
-    const venvPython = path.join(__dirname, '.venv', 'Scripts', 'python.exe');
-    return fs.existsSync(venvPython) ? venvPython : 'python';
+    this.driveService = new DriveService(auth);
+    this.docService = new DocService(auth);
+    this.aiService = new AIService(config);
+    this.youtubeService = new YouTubeService(config);
+    this.trendService = new TrendService();
+    this.dbService = new DBService(config.dbConnectionString, config.dbName);
   }
-  return 'python3';
-}
 
-// ─── Stage 1: Parse script file ───────────────────────────────────────────────
-function parseScript(scriptPath) {
-  const content = fs.readFileSync(scriptPath, 'utf-8');
-  const segments = [];
-  const expressionRegex = /^\[([A-Z_]+)\]\s*(.*)/;
-
-  for (const line of content.split('\n')) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith('//')) continue;
-    const match = trimmed.match(expressionRegex);
-    if (!match) continue;
-
-    const [, expression, text] = match;
-    const words = text.split(/\s+/).filter(Boolean);
-    if (words.length === 0) continue;
-
-    segments.push({
-      expression,
-      text,
-      words,
-      duration: Math.max(1.5, words.length / WORDS_PER_SEC),
-      totalFrames: Math.round(Math.max(1.5, words.length / WORDS_PER_SEC) * FPS),
-    });
-  }
-  return segments;
-}
-
-// ─── Stage 2: Build lip sync track ────────────────────────────────────────────
-function buildMouthTrack(segment) {
-  const { words, totalFrames } = segment;
-  const track = new Array(totalFrames).fill(0);
-  const framesPerWord = totalFrames / words.length;
-
-  for (let wi = 0; wi < words.length; wi++) {
-    const word = words[wi];
-    const startFrame = Math.round(wi * framesPerWord);
-    const endFrame = Math.round((wi + 1) * framesPerWord);
-    const vowelCount = (word.match(/[aeiouAEIOU]/g) || []).length;
-    const openness = Math.min(1.0, 0.3 + vowelCount * 0.18);
-    const syllables = Math.ceil(word.length / 3);
-
-    for (let f = startFrame; f < endFrame; f++) {
-      const phase = (f - startFrame) / (endFrame - startFrame);
-      const syllPhase = (phase * syllables) % 1;
-      track[f] = openness * Math.sin(syllPhase * Math.PI) * Math.sin(phase * Math.PI);
+  getPythonCmd() {
+    if (process.platform === 'win32') {
+      const venvPython = path.join(__dirname, '.venv', 'Scripts', 'python.exe');
+      return fs.existsSync(venvPython) ? venvPython : 'python';
     }
+    return 'python3';
   }
-  return track;
-}
 
-// ─── Stage 3: Build frame manifest ────────────────────────────────────────────
-function buildFrameManifest(segments) {
-  const frames = [];
-  let fc = 0;
-
-  const silence = (expr = 'IDLE', dur = INTRO_DUR) => {
-    for (let i = 0; i < Math.round(dur * FPS); i++) {
-      frames.push({ frame: fc++, expression: expr, mouth: 0, text: '', subVisible: false, wordIndex: -1, words: [] });
-    }
-  };
-
-  silence('IDLE', INTRO_DUR);
-
-  for (const seg of segments) {
-    const mouthTrack = buildMouthTrack(seg);
-    for (let f = 0; f < seg.totalFrames; f++) {
-      frames.push({
-        frame: fc++,
-        expression: seg.expression,
-        mouth: mouthTrack[f],
-        text: seg.text,
-        subVisible: true,
-        wordIndex: Math.floor((f / seg.totalFrames) * seg.words.length),
-        words: seg.words,
+  parseScript(content) {
+    const segments = [];
+    const expressionRegex = /^\[([A-Z_]+)\]\s*(.*)/;
+    for (const line of content.split('\n')) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith('//')) continue;
+      const match = trimmed.match(expressionRegex);
+      if (!match) continue;
+      const [, expression, text] = match;
+      const words = text.split(/\s+/).filter(Boolean);
+      if (words.length === 0) continue;
+      segments.push({
+        expression,
+        text,
+        words,
+        duration: Math.max(1.5, words.length / this.config.wordsPerSec),
+        totalFrames: Math.round(Math.max(1.5, words.length / this.config.wordsPerSec) * this.config.fps),
       });
     }
-    silence('IDLE', PAUSE_DUR);
+    return segments;
   }
 
-  silence('WAVING', OUTRO_DUR);
-  return frames;
-}
-
-// ─── Stage 4: Write manifest ───────────────────────────────────────────────────
-function writeManifest(frames, manifestPath) {
-  fs.writeFileSync(manifestPath, JSON.stringify({ fps: FPS, totalFrames: frames.length, frames }, null, 2));
-  log(`✓ Manifest: ${frames.length} frames`);
-}
-
-// ─── Stage 5: Render frames ────────────────────────────────────────────────────
-function renderFrames(manifestPath, framesDir) {
-  if (!fs.existsSync(framesDir)) fs.mkdirSync(framesDir, { recursive: true });
-  log('Rendering frames...');
-
-  const result = spawnSync(getPythonCmd(), [path.join(__dirname, 'renderer.py'), manifestPath, framesDir], {
-    stdio: 'inherit',
-    timeout: 300_000,
-  });
-
-  if (result.error) throw new Error(`Renderer spawn failed: ${result.error.message}`);
-  if (result.status !== 0) throw new Error(`Renderer exited with code ${result.status}`);
-  log('✓ Frames rendered');
-}
-
-// ─── Stage 6: Encode video ─────────────────────────────────────────────────────
-function encodeVideo(manifestPath, framesDir, outputPath) {
-  log('Encoding video...');
-
-  const result = spawnSync(getPythonCmd(), [
-    path.join(__dirname, 'video_encoder.py'),
-    manifestPath,
-    outputPath,
-    String(FPS),
-    framesDir,
-  ], {
-    stdio: 'inherit',
-    timeout: 600_000,
-  });
-
-  if (result.error) throw new Error(`Encoder spawn failed: ${result.error.message}`);
-  if (result.status !== 0) throw new Error(`Encoder exited with code ${result.status}`);
-  log(`✓ Video encoded: ${outputPath}`);
-}
-
-// ─── Pipeline: Script → Video ──────────────────────────────────────────────────
-async function generateVideo(scriptPath, outputPath) {
-  const runId = `autoconman_${Date.now()}_${process.pid}`;
-  const tempDir = path.join(os.tmpdir(), runId);
-  const manifestPath = path.join(tempDir, 'manifest.json');
-  const framesDir = path.join(tempDir, 'frames');
-
-  try {
-    fs.mkdirSync(tempDir, { recursive: true });
-    log(`Temp workspace: ${tempDir}`);
-
-    const segments = parseScript(scriptPath);
-    if (segments.length === 0) throw new Error('No valid segments found in script.');
-    log(`Parsed ${segments.length} segment(s)`);
-
-    const frames = buildFrameManifest(segments);
-    writeManifest(frames, manifestPath);
-    renderFrames(manifestPath, framesDir);
-    encodeVideo(manifestPath, framesDir, outputPath);
-
-    log(`✓ Video ready: ${outputPath}`);
-  } finally {
-    fs.rmSync(tempDir, { recursive: true, force: true });
-    log('Temp workspace cleaned up.');
+  buildFrameManifest(segments) {
+    const frames = [];
+    let fc = 0;
+    const silence = (expr = 'IDLE', dur = this.config.introDur) => {
+      for (let i = 0; i < Math.round(dur * this.config.fps); i++) {
+        frames.push({ frame: fc++, expression: expr, mouth: 0, text: '', subVisible: false, wordIndex: -1, words: [] });
+      }
+    };
+    silence('IDLE', this.config.introDur);
+    for (const seg of segments) {
+      const mouthTrack = this.buildMouthTrack(seg);
+      for (let f = 0; f < seg.totalFrames; f++) {
+        frames.push({
+          frame: fc++,
+          expression: seg.expression,
+          mouth: mouthTrack[f],
+          text: seg.text,
+          subVisible: true,
+          wordIndex: Math.floor((f / seg.totalFrames) * seg.words.length),
+          words: seg.words,
+        });
+      }
+      silence('IDLE', this.config.pauseDur);
+    }
+    silence('WAVING', this.config.outroDur);
+    return frames;
   }
-}
 
-// ─── Main: Drive → AI → Video → YouTube ───────────────────────────────────────
-async function main() {
-  validateConfig();
+  buildMouthTrack(segment) {
+    const { words, totalFrames } = segment;
+    const track = new Array(totalFrames).fill(0);
+    const framesPerWord = totalFrames / words.length;
+    for (let wi = 0; wi < words.length; wi++) {
+      const word = words[wi];
+      const startFrame = Math.round(wi * framesPerWord);
+      const endFrame = Math.round((wi + 1) * framesPerWord);
+      const vowelCount = (word.match(/[aeiouAEIOU]/g) || []).length;
+      const openness = Math.min(1.0, 0.3 + vowelCount * 0.18);
+      const syllables = Math.ceil(word.length / 3);
+      for (let f = startFrame; f < endFrame; f++) {
+        const phase = (f - startFrame) / (endFrame - startFrame);
+        const syllPhase = (phase * syllables) % 1;
+        track[f] = openness * Math.sin(syllPhase * Math.PI) * Math.sin(phase * Math.PI);
+      }
+    }
+    return track;
+  }
 
-  // Initialize Services
-  const authService = new AuthService(config);
-  const auth = authService.getAuth();
+  async run() {
+    try {
+      await this.dbService.connect();
+      Logger.info('[1/4] Scanning for new content...');
+      
+      const { target, payload, sourceType } = await this.ingestContent();
+      if (!target) {
+        Logger.info('Nothing to process today. System idling.');
+        return;
+      }
 
-  const driveService = new DriveService(auth);
-  const docService = new DocService(auth);
-  const aiService = new AIService(config);
-  const youtubeService = new YouTubeService(config);
-  const trendService = new TrendService();
+      Logger.info(`\n[2/4] Drafting script using ${sourceType === 'DOC' ? 'Document' : 'Research'} prompt...`);
+      const script = await this.aiService.generateScript(payload, sourceType);
+      Logger.info(`  → Analyzing script for metadata and thumbnail design...`);
+      const { metadata, thumbnail: thumbnailData } = await this.aiService.generateVideoData(script, sourceType);
 
-  const dbService = new DBService(config.dbConnectionString, config.dbName);
+      Logger.info('[3/4] Starting video production pipeline...');
+      const videoPath = await this.produceVideo(script, target, thumbnailData);
 
-  try {
-    await dbService.connect();
+      Logger.info('[4/4] Uploading to YouTube...');
+      await this.uploadToYouTube(videoPath, metadata, thumbnailData, target, sourceType);
 
-    // ─── 1. Check Google Drive ───
-    // ─── 1. Select Content Source (Drive Priority) ───
-    log('[1/4] Scanning for new content...');
-    const allFiles = await driveService.listFilesInFolder(config.driveFolderId);
-    const newFiles = await dbService.getModifiedFiles(allFiles);
+      // Finalize Log
+      if (sourceType === 'DOC') {
+        await this.dbService.upsertFiles([target]);
+      } else {
+        await this.dbService.saveTrend(target);
+      }
+      Logger.info(`✓ ${sourceType} processed and logged successfully.`);
+
+    } catch (err) {
+      Logger.error(`Pipeline Fatal Error: ${err.message}`, err);
+    } finally {
+      await this.resourceManager.cleanup();
+      await this.dbService.disconnect();
+    }
+  }
+
+  async ingestContent() {
+    const allFiles = await this.driveService.listFilesInFolder(this.config.driveFolderId);
+    const newFiles = await this.dbService.getModifiedFiles(allFiles);
     
-    let target = null;
-    let payload = null;
-    let sourceType = null;
-
-    // Check Drive for [READY] files
     for (const file of newFiles) {
       if (file.mimeType !== 'application/vnd.google-apps.document') continue;
-      
-      const content = await docService.getDocumentContentAsArray(file.id);
-      if (docService.isDocumentReady(content)) {
-        log(`  → Selected [READY] Drive file: "${file.name}"`);
-        target = file;
-        payload = content.filter(p => !p.toUpperCase().includes('[READY]'));
-        sourceType = 'DOC';
-        break;
+      const content = await this.docService.getDocumentContentAsArray(file.id);
+      if (this.docService.isDocumentReady(content)) {
+        Logger.info(`  → Selected [READY] Drive file: "${file.name}"`);
+        return {
+          target: file,
+          payload: content.filter(p => !p.toUpperCase().includes('[READY]')),
+          sourceType: 'DOC'
+        };
       }
     }
 
-    // Fallback to Google Trends
-    if (!target) {
-      log('  → No ready files in Drive. Checking Google Trends...');
-      const trend = await trendService.getLatestTrend(dbService);
-      if (trend) {
-        log(`  → Selected trending topic: "${trend.title}"`);
-        target = trend;
-        payload = trend.researchChunks;
-        sourceType = 'RESEARCH';
-      }
+    Logger.info('  → No ready files in Drive. Checking Google Trends...');
+    const trend = await this.trendService.getLatestTrend(this.dbService);
+    if (trend) {
+      Logger.info(`  → Selected trending topic: "${trend.title}"`);
+      return {
+        target: trend,
+        payload: trend.researchChunks,
+        sourceType: 'RESEARCH'
+      };
     }
 
-    if (!target) {
-      log('Nothing to process today. System idling.');
-      return;
-    }
+    return { target: null, payload: null, sourceType: null };
+  }
 
-    // ─── 2. AI Content Generation ───
-    log(`\n[2/4] Drafting script using ${sourceType === 'DOC' ? 'Document' : 'Research'} prompt...`);
-    const script = await aiService.generateScript(payload, sourceType);
+  execProcess(cmd, args, options = {}) {
+    return new Promise((resolve, reject) => {
+      const proc = require('child_process').spawn(cmd, args, {
+        stdio: 'inherit',
+        ...options
+      });
+      proc.on('close', (code) => {
+        if (code === 0) resolve();
+        else reject(new Error(`Process ${cmd} failed with code ${code}`));
+      });
+      proc.on('error', (err) => reject(new Error(`Failed to spawn ${cmd}: ${err.message}`)));
+    });
+  }
+
+  async produceVideo(script, target, thumbnailData) {
+    const runId = `autoconman_${Date.now()}_${process.pid}`;
+    const tempDir = path.join(os.tmpdir(), runId);
+    this.resourceManager.addDir(tempDir);
     
-    log(`  → Analyzing script for metadata and thumbnail design...`);
-    const { metadata, thumbnail: thumbnailData } = await aiService.generateVideoData(script, sourceType);
+    const manifestPath = path.join(tempDir, 'manifest.json');
+    const framesDir = path.join(tempDir, 'frames');
+    fs.mkdirSync(tempDir, { recursive: true });
 
-    // ─── 3. Video Production ───
-    log('[3/4] Starting video production pipeline...');
-    const outputDir = path.join(__dirname, 'output');
-    fs.mkdirSync(outputDir, { recursive: true });
+    const segments = this.parseScript(script);
+    const frames = this.buildFrameManifest(segments);
+    fs.writeFileSync(manifestPath, JSON.stringify({ fps: this.config.fps, totalFrames: frames.length, frames }, null, 2));
 
-    const scriptPath = path.join(os.tmpdir(), `acm_script_${Date.now()}.txt`);
-    fs.writeFileSync(scriptPath, script);
+    Logger.info('Rendering frames...');
+    await this.execProcess(this.getPythonCmd(), [path.join(__dirname, 'renderer.py'), manifestPath, framesDir], { timeout: 300_000 });
 
     const rawTitle = target.name || target.title;
     const safeName = rawTitle.replace(/[^a-z0-9]/gi, '_').replace(/_+/g, '_').substring(0, 50);
+    const outputDir = path.join(__dirname, 'output');
+    fs.mkdirSync(outputDir, { recursive: true });
     const videoPath = path.join(outputDir, `${safeName}_output.mp4`);
-    
-    await generateVideo(scriptPath, videoPath);
-    fs.unlinkSync(scriptPath);
 
-    // ─── 3.5: Generate Thumbnail ───
-    log('  → Rendering AI thumbnail...');
-    const thumbnailPath = path.join(outputDir, `${safeName}_thumbnail.png`);
-    
-    // Validate AI data before passing to Python
-    const validThemes = ['SPORTS', 'FINANCE', 'POLITICS', 'DISASTER', 'ENTERTAINMENT', 'TECHNOLOGY', 'DEFAULT'];
-    const validPoses = ['HAPPY', 'SAD', 'ANGRY', 'SURPRISED', 'LAUGHING', 'WAVING', 'THINK', 'IDLE'];
-    
-    const theme = validThemes.includes(thumbnailData.theme?.toUpperCase()) ? thumbnailData.theme.toUpperCase() : 'DEFAULT';
-    const pose = validPoses.includes(thumbnailData.characterPose?.toUpperCase()) ? thumbnailData.characterPose.toUpperCase() : 'IDLE';
-    const title = (thumbnailData.twoWordTitle || 'BREAKING NEWS').substring(0, 40);
-    const accent = /^#[0-9A-F]{6}$/i.test(thumbnailData.accentHex) ? thumbnailData.accentHex : '#7C4DFF';
+    Logger.info('Encoding video...');
+    await this.execProcess(this.getPythonCmd(), [path.join(__dirname, 'video_encoder.py'), manifestPath, videoPath, String(this.config.fps), framesDir], { timeout: 600_000 });
 
-    const thumbResult = spawnSync(getPythonCmd(), [
-      path.join(__dirname, 'thumbnail_generator.py'),
-      theme,
-      title,
-      pose,
-      accent,
-      thumbnailPath,
-    ], { stdio: 'inherit', timeout: 60_000 });
-    
-    const thumbnailReady = thumbResult.status === 0 && fs.existsSync(thumbnailPath);
-    if (thumbnailReady) {
-      log(`  ✓ Thumbnail ready: ${thumbnailPath}`);
-    } else {
-      log('  ⚠ Thumbnail generation failed — uploading without custom thumbnail.');
-    }
+    return videoPath;
+  }
 
-    // ─── 4. YouTube Upload ───
-    log('[4/4] Uploading to YouTube...');
-    
-    let ytTitle = (metadata?.title || `🔥 ${rawTitle}`).replace(/#Shorts/gi, '').trim();
-    let ytDesc = (metadata?.description || `Top news analysis of ${rawTitle}.`).replace(/#(AI|Automation)/gi, '').trim();
+  async uploadToYouTube(videoPath, metadata, thumbnailData, target, sourceType) {
+    const rawTitle = target.name || target.title;
+    const ytTitle = (metadata?.title || `🔥 ${rawTitle}`).replace(/#Shorts/gi, '').trim();
+    const ytDesc = (metadata?.description || `Top news analysis of ${rawTitle}.`).replace(/#(AI|Automation)/gi, '').trim();
     let ytTags = metadata?.hashtags || ['Trending', sourceType];
-    
-    // Safety filter for tags
     ytTags = ytTags.filter(t => !['#AI', '#Automation', 'AI', 'Automation', '#Shorts', 'Shorts'].includes(t.replace('#', '')));
 
-    const videoData = await youtubeService.uploadVideo(videoPath, {
+    const videoData = await this.youtubeService.uploadVideo(videoPath, {
       title: ytTitle,
       description: `${ytDesc}\n\nTags: ${ytTags.join(' ')}`,
       tags: ytTags.map(t => t.replace('#', '')),
     });
 
-    // Set custom thumbnail if available
-    if (thumbnailReady && videoData?.id) {
-      await youtubeService.setThumbnail(videoData.id, thumbnailPath);
-    }
+    // Generate and set thumbnail
+    Logger.info('  → Rendering AI thumbnail...');
+    const outputDir = path.dirname(videoPath);
+    const safeName = path.basename(videoPath, '_output.mp4');
+    const thumbnailPath = path.join(outputDir, `${safeName}_thumbnail.png`);
 
-    // ─── 5. Finalize Log ───
-    if (sourceType === 'DOC') {
-      await dbService.upsertFiles([target]);
-    } else {
-      await dbService.saveTrend(target);
-    }
-    log(`✓ ${sourceType} processed and logged successfully.`);
+    const validThemes = ['SPORTS', 'FINANCE', 'POLITICS', 'DISASTER', 'ENTERTAINMENT', 'TECHNOLOGY', 'DEFAULT'];
+    const validPoses = ['HAPPY', 'SAD', 'ANGRY', 'SURPRISED', 'LAUGHING', 'WAVING', 'THINK', 'IDLE'];
+    const theme = validThemes.includes(thumbnailData.theme?.toUpperCase()) ? thumbnailData.theme.toUpperCase() : 'DEFAULT';
+    const pose = validPoses.includes(thumbnailData.characterPose?.toUpperCase()) ? thumbnailData.characterPose.toUpperCase() : 'IDLE';
+    const title = (thumbnailData.twoWordTitle || 'BREAKING NEWS').substring(0, 40);
+    const accent = /^#[0-9A-F]{6}$/i.test(thumbnailData.accentHex) ? thumbnailData.accentHex : '#7C4DFF';
 
-  } catch (err) {
-    log(`✗ Pipeline Fatal Error: ${err.message}`);
-    console.error(err.stack);
-  } finally {
-    await dbService.disconnect();
+    try {
+      await this.execProcess(this.getPythonCmd(), [path.join(__dirname, 'thumbnail_generator.py'), theme, title, pose, accent, thumbnailPath], { timeout: 60_000 });
+      if (fs.existsSync(thumbnailPath) && videoData?.id) {
+        await this.youtubeService.setThumbnail(videoData.id, thumbnailPath);
+        Logger.info(`  ✓ Thumbnail uploaded: ${thumbnailPath}`);
+      }
+    } catch (error) {
+      Logger.warn(`  ⚠ Thumbnail generation failed or skipped: ${error.message}`);
+    }
   }
 }
 
 // ─── Entry point ──────────────────────────────────────────────────────────────
 if (require.main === module) {
+  validateConfig();
   console.log('[autoConMan] Starting pipeline...');
-  main()
+  const pipeline = new VideoPipeline(config);
+  pipeline.run()
     .then(() => {
       console.log('[autoConMan] Done.');
       process.exit(0);
     })
     .catch((err) => {
-      console.error('[autoConMan] Fatal error:', err.message);
-      console.error(err.stack);
+      console.error('[autoConMan] Fatal error during initialization:', err.message);
       process.exit(1);
     });
 }

@@ -44,9 +44,15 @@ class DBService {
   }
 
   async getModifiedFiles(fetchedFiles) {
+    if (!fetchedFiles || fetchedFiles.length === 0) return [];
+    
+    const fileIds = fetchedFiles.map(f => f.id);
+    const existingRecords = await DriveFileLog.find({ _id: { $in: fileIds } });
+    const recordMap = new Map(existingRecords.map(r => [r._id, r]));
+
     const deltaFiles = [];
     for (const file of fetchedFiles) {
-      const record = await DriveFileLog.findById(file.id);
+      const record = recordMap.get(file.id);
       const driveModifiedTime = new Date(file.modifiedTime);
 
       if (!record) {

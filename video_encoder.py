@@ -75,6 +75,7 @@ def encode_video(manifest_path, output_path, fps=24, frames_dir=None):
             output_path,
             codec='libx264',
             audio_codec='aac',
+            threads=os.cpu_count() or 4,
             logger=None
         )
 
