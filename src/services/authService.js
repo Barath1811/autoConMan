@@ -5,14 +5,14 @@ class AuthService {
     this.config = config;
   }
 
-  getAuth() {
+  async getAuth() {
     let credentials;
     try {
       credentials = JSON.parse(this.config.googleCredentials);
     } catch {
       throw new Error('Authentication Error: GOOGLE_CREDENTIALS is not valid JSON.');
     }
-    return new google.auth.GoogleAuth({
+    const auth = new google.auth.GoogleAuth({
       credentials,
       scopes: [
         'https://www.googleapis.com/auth/drive.readonly',
@@ -20,6 +20,7 @@ class AuthService {
         'https://www.googleapis.com/auth/youtube.upload',
       ],
     });
+    return await auth.getClient();
   }
 }
 

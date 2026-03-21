@@ -196,7 +196,7 @@ async function main() {
 
   // Initialize Services
   const authService = new AuthService(config);
-  const auth = authService.getAuth();
+  const auth = await authService.getAuth();
 
   const driveService = new DriveService(auth);
   const docService = new DocService(auth);
