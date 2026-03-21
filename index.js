@@ -266,7 +266,7 @@ async function main() {
     fs.writeFileSync(scriptPath, script);
 
     const rawTitle = target.name || target.title;
-    const safeName = rawTitle.replace(/\s+/g, '_').substring(0, 50);
+    const safeName = rawTitle.replace(/[^a-z0-9]/gi, '_').replace(/_+/g, '_').substring(0, 50);
     const videoPath = path.join(outputDir, `${safeName}_output.mp4`);
     
     await generateVideo(scriptPath, videoPath);
@@ -276,12 +276,21 @@ async function main() {
     log('  → Rendering AI thumbnail...');
     const thumbnailPath = path.join(outputDir, `${safeName}_thumbnail.png`);
     
+    // Validate AI data before passing to Python
+    const validThemes = ['SPORTS', 'FINANCE', 'POLITICS', 'DISASTER', 'ENTERTAINMENT', 'TECHNOLOGY', 'DEFAULT'];
+    const validPoses = ['HAPPY', 'SAD', 'ANGRY', 'SURPRISED', 'LAUGHING', 'WAVING', 'THINK', 'IDLE'];
+    
+    const theme = validThemes.includes(thumbnailData.theme?.toUpperCase()) ? thumbnailData.theme.toUpperCase() : 'DEFAULT';
+    const pose = validPoses.includes(thumbnailData.characterPose?.toUpperCase()) ? thumbnailData.characterPose.toUpperCase() : 'IDLE';
+    const title = (thumbnailData.twoWordTitle || 'BREAKING NEWS').substring(0, 40);
+    const accent = /^#[0-9A-F]{6}$/i.test(thumbnailData.accentHex) ? thumbnailData.accentHex : '#7C4DFF';
+
     const thumbResult = spawnSync(getPythonCmd(), [
       path.join(__dirname, 'thumbnail_generator.py'),
-      thumbnailData.theme,
-      thumbnailData.twoWordTitle,
-      thumbnailData.characterPose,
-      thumbnailData.accentHex,
+      theme,
+      title,
+      pose,
+      accent,
       thumbnailPath,
     ], { stdio: 'inherit', timeout: 60_000 });
     

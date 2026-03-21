@@ -8,7 +8,7 @@ class YouTubeService {
     this.oauth2Client = new google.auth.OAuth2(
       config.youtubeClientId,
       config.youtubeClientSecret,
-      'http://localhost:3000/oauth2callback'
+      config.youtubeRedirectUri
     );
     this.oauth2Client.setCredentials({
       refresh_token: config.youtubeRefreshToken,

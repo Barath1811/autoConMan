@@ -9,6 +9,7 @@ const config = {
   youtubeClientId: process.env.YOUTUBE_CLIENT_ID,
   youtubeClientSecret: process.env.YOUTUBE_CLIENT_SECRET,
   youtubeRefreshToken: process.env.YOUTUBE_REFRESH_TOKEN,
+  youtubeRedirectUri: process.env.YOUTUBE_REDIRECT_URI || 'http://localhost:3000/oauth2callback',
   defaultVoice: process.env.DEFAULT_VOICE || 'en-US-ChristopherNeural',
   aiModel: process.env.AI_MODEL || 'gemini-flash-latest',
   wordsPerSec: parseFloat(process.env.WORDS_PER_SEC) || 2.8,

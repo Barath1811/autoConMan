@@ -85,7 +85,12 @@ class AIService {
       const result = await this.model.generateContent(prompt);
       const output = (await result.response).text().trim();
       const cleanedJson = output.replace(/```json|```/g, '').trim();
-      return JSON.parse(cleanedJson);
+      try {
+        return JSON.parse(cleanedJson);
+      } catch (e) {
+        console.warn(`[AIService] JSON Parse Error: ${e.message}. Raw output: ${output}`);
+        return null; // Let _callWithRetry retry if it returns null? Wait, _callWithRetry only retries on error.
+      }
     });
 
     return data || {
@@ -110,15 +115,6 @@ class AIService {
     }
   }
 
-  async generateScript(payload, source) {
-    return this._callWithRetry(async () => {
-      const isResearch = source === 'RESEARCH';
-      const today = new Date().toISOString().split('T')[0];
-      const prompt = `Generate a video script for ${today} from this: ${payload.join('\n')}. Use [EXPRESSION] format.`;
-      const result = await this.model.generateContent(prompt);
-      return (await result.response).text().trim();
-    });
-  }
 }
 
 module.exports = AIService;
