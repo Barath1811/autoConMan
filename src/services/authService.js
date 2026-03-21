@@ -1,25 +1,28 @@
+'use strict';
 const { google } = require('googleapis');
 
+/**
+ * Service for managing Google OAuth2 authentication.
+ */
 class AuthService {
+  /**
+   * @param {Object} config - System configuration.
+   */
   constructor(config) {
-    this.config = config;
+    this.auth = new google.auth.OAuth2(
+      config.googleClientId,
+      config.googleClientSecret,
+      config.googleRedirectUri
+    );
+    this.auth.setCredentials({ refresh_token: config.googleRefreshToken });
   }
 
+  /**
+   * Returns the authenticated OAuth2 client.
+   * @returns {Object}
+   */
   getAuth() {
-    let credentials;
-    try {
-      credentials = JSON.parse(this.config.googleCredentials);
-    } catch {
-      throw new Error('Authentication Error: GOOGLE_CREDENTIALS is not valid JSON.');
-    }
-    return new google.auth.GoogleAuth({
-      credentials,
-      scopes: [
-        'https://www.googleapis.com/auth/drive.readonly',
-        'https://www.googleapis.com/auth/documents.readonly',
-        'https://www.googleapis.com/auth/youtube.upload',
-      ],
-    });
+    return this.auth;
   }
 }
 

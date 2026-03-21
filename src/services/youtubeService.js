@@ -2,35 +2,45 @@
 const { google } = require('googleapis');
 const fs = require('fs');
 
+/**
+ * Service for interacting with the YouTube Data API.
+ */
 class YouTubeService {
+  /**
+   * @param {Object} config - System configuration.
+   */
   constructor(config) {
     // YouTube requires OAuth2 — service accounts cannot upload videos
-    this.oauth2Client = new google.auth.OAuth2(
+    this.auth = new google.auth.OAuth2(
       config.youtubeClientId,
       config.youtubeClientSecret,
       config.youtubeRedirectUri
     );
-    this.oauth2Client.setCredentials({
-      refresh_token: config.youtubeRefreshToken,
-    });
-    this.youtube = google.youtube({ version: 'v3', auth: this.oauth2Client });
+    this.auth.setCredentials({ refresh_token: config.youtubeRefreshToken });
+    this.youtube = google.youtube({ version: 'v3', auth: this.auth });
   }
 
+  /**
+   * Uploads a video file to YouTube.
+   * @param {string} videoPath - Local path to the MP4 file.
+   * @param {Object} metadata - Video metadata (title, description, tags).
+   * @returns {Promise<Object>} The uploaded video resource.
+   */
   async uploadVideo(videoPath, metadata) {
-    console.log(`  → Uploading to YouTube: "${metadata.title}"`);
+    console.log(`Uploading video: ${metadata.title}...`);
     const fileSize = fs.statSync(videoPath).size;
 
-    const response = await this.youtube.videos.insert({
+    const res = await this.youtube.videos.insert({
       part: 'snippet,status',
       requestBody: {
         snippet: {
           title: metadata.title,
           description: metadata.description || '',
           tags: metadata.tags || [],
-          categoryId: metadata.categoryId || '22',
+          categoryId: '28', // Science & Technology
         },
         status: {
-          privacyStatus: metadata.privacyStatus || 'public',
+          privacyStatus: 'public', // Change to 'unlisted' or 'private' for testing
           selfDeclaredMadeForKids: false,
         },
       },
@@ -43,12 +53,19 @@ class YouTubeService {
         process.stdout.write(`  → Uploading: ${pct}%\r`);
       },
     });
-
-    console.log(`\n  ✓ Uploaded! Video ID: ${response.data.id}`);
-    console.log(`  ✓ URL: https://www.youtube.com/watch?v=${response.data.id}`);
-    return response.data;
+    console.log(`\n  ✓ Uploaded! Video ID: ${res.data.id}`);
+    console.log(`  ✓ URL: https://www.youtube.com/watch?v=${res.data.id}`);
+    return res.data;
   }
+
+  /**
+   * Sets a custom thumbnail for a YouTube video.
+   * @param {string} videoId
+   * @param {string} thumbnailPath - Local path to the image.
+   * @returns {Promise<void>}
+   */
   async setThumbnail(videoId, thumbnailPath) {
+    console.log(`Setting thumbnail for video ${videoId}...`);
     try {
       await this.youtube.thumbnails.set({
         videoId,

@@ -15,23 +15,36 @@ const AIService = require('./src/services/aiService');
 const YouTubeService = require('./src/services/youtubeService');
 const TrendService = require('./src/services/trendService');
 
+/**
+ * Orchestrates the video generation pipeline, from content ingestion to YouTube upload.
+ */
 class VideoPipeline {
-  constructor(config) {
+  /**
+   * @param {Object} config - System configuration object.
+   * @param {Object} services - Injected services.
+   * @param {Object} services.driveService
+   * @param {Object} services.docService
+   * @param {Object} services.aiService
+   * @param {Object} services.youtubeService
+   * @param {Object} services.trendService
+   * @param {Object} services.dbService
+   * @param {Object} services.resourceManager
+   */
+  constructor(config, services) {
     this.config = config;
-    this.resourceManager = new ResourceManager();
-    
-    // Initialize services
-    const authService = new AuthService(config);
-    const auth = authService.getAuth();
-
-    this.driveService = new DriveService(auth);
-    this.docService = new DocService(auth);
-    this.aiService = new AIService(config);
-    this.youtubeService = new YouTubeService(config);
-    this.trendService = new TrendService();
-    this.dbService = new DBService(config.dbConnectionString, config.dbName);
+    this.driveService = services.driveService;
+    this.docService = services.docService;
+    this.aiService = services.aiService;
+    this.youtubeService = services.youtubeService;
+    this.trendService = services.trendService;
+    this.dbService = services.dbService;
+    this.resourceManager = services.resourceManager;
   }
 
+  /**
+   * Returns the command to run Python based on the OS.
+   * @returns {string}
+   */
   getPythonCmd() {
     if (process.platform === 'win32') {
       const venvPython = path.join(__dirname, '.venv', 'Scripts', 'python.exe');
@@ -40,6 +53,11 @@ class VideoPipeline {
     return 'python3';
   }
 
+  /**
+   * Parses a script string into segments with expressions and durations.
+   * @param {string} content - The script content.
+   * @returns {Array<Object>}
+   */
   parseScript(content) {
     const segments = [];
     const expressionRegex = /^\[([A-Z_]+)\]\s*(.*)/;
@@ -62,6 +80,11 @@ class VideoPipeline {
     return segments;
   }
 
+  /**
+   * Builds a frame manifest for the renderer.
+   * @param {Array<Object>} segments - Parsed script segments.
+   * @returns {Array<Object>}
+   */
   buildFrameManifest(segments) {
     const frames = [];
     let fc = 0;
@@ -90,6 +113,11 @@ class VideoPipeline {
     return frames;
   }
 
+  /**
+   * Builds a lip-sync track for a script segment.
+   * @param {Object} segment - Script segment.
+   * @returns {Array<number>}
+   */
   buildMouthTrack(segment) {
     const { words, totalFrames } = segment;
     const track = new Array(totalFrames).fill(0);
@@ -110,6 +138,10 @@ class VideoPipeline {
     return track;
   }
 
+  /**
+   * Executes the full pipeline.
+   * @returns {Promise<void>}
+   */
   async run() {
     try {
       await this.dbService.connect();
@@ -148,6 +180,10 @@ class VideoPipeline {
     }
   }
 
+  /**
+   * Ingests content from either Google Drive or Google Trends.
+   * @returns {Promise<Object>}
+   */
   async ingestContent() {
     const allFiles = await this.driveService.listFilesInFolder(this.config.driveFolderId);
     const newFiles = await this.dbService.getModifiedFiles(allFiles);
@@ -179,6 +215,13 @@ class VideoPipeline {
     return { target: null, payload: null, sourceType: null };
   }
 
+  /**
+   * Spawns a child process and returns a promise that resolves on completion.
+   * @param {string} cmd - Command to run.
+   * @param {string[]} args - Command arguments.
+   * @param {Object} options - Spawn options.
+   * @returns {Promise<void>}
+   */
   execProcess(cmd, args, options = {}) {
     return new Promise((resolve, reject) => {
       const proc = require('child_process').spawn(cmd, args, {
@@ -193,6 +236,13 @@ class VideoPipeline {
     });
   }
 
+  /**
+   * Orchestrates the frame rendering and video encoding.
+   * @param {string} script - The voiceover script.
+   * @param {Object} target - The data source object.
+   * @param {Object} thumbnailData - Thumbnail design data.
+   * @returns {Promise<string>} Path to the generated video.
+   */
   async produceVideo(script, target, thumbnailData) {
     const runId = `autoconman_${Date.now()}_${process.pid}`;
     const tempDir = path.join(os.tmpdir(), runId);
@@ -221,6 +271,15 @@ class VideoPipeline {
     return videoPath;
   }
 
+  /**
+   * Uploads the video and sets a custom thumbnail.
+   * @param {string} videoPath - Local path to the video file.
+   * @param {Object} metadata - AI-generated title/desc/tags.
+   * @param {Object} thumbnailData - Thumbnail design data.
+   * @param {Object} target - Source data object.
+   * @param {string} sourceType - Type of source (DOC or RESEARCH).
+   * @returns {Promise<void>}
+   */
   async uploadToYouTube(videoPath, metadata, thumbnailData, target, sourceType) {
     const rawTitle = target.name || target.title;
     const ytTitle = (metadata?.title || `🔥 ${rawTitle}`).replace(/#Shorts/gi, '').trim();
@@ -263,7 +322,22 @@ class VideoPipeline {
 if (require.main === module) {
   validateConfig();
   console.log('[autoConMan] Starting pipeline...');
-  const pipeline = new VideoPipeline(config);
+  
+  // Service Instantiation (Composition Root)
+  const authService = new AuthService(config);
+  const auth = authService.getAuth();
+  
+  const services = {
+    driveService: new DriveService(auth),
+    docService: new DocService(auth),
+    aiService: new AIService(config),
+    youtubeService: new YouTubeService(config),
+    trendService: new TrendService(),
+    dbService: new DBService(config.dbConnectionString, config.dbName),
+    resourceManager: new ResourceManager(),
+  };
+
+  const pipeline = new VideoPipeline(config, services);
   pipeline.run()
     .then(() => {
       console.log('[autoConMan] Done.');

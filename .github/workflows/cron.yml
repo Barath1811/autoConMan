@@ -22,11 +22,13 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '24'
+          cache: 'npm'
 
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+          cache: 'pip'
 
       - name: Install System Dependencies
         run: |
@@ -85,3 +87,19 @@ jobs:
           STAR_SEED: ${{ secrets.STAR_SEED }}
           CHAR_SCALE: ${{ secrets.CHAR_SCALE }}
         run: npm start
+
+      - name: Upload Video Artifact
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: generated-video
+          path: output/*_output.mp4
+          retention-days: 1
+
+      - name: Upload Thumbnail Artifact
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: generated-thumbnail
+          path: output/*_thumbnail.png
+          retention-days: 1
