@@ -358,6 +358,7 @@ def render_frame_worker(args):
     frame_idx, frame_data, frames_dir, stars = args
     surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, Config.WIDTH, Config.HEIGHT)
     ctx = cairo.Context(surface)
+    ctx.set_antialias(cairo.ANTIALIAS_BEST)
     
     cx, cy = Config.WIDTH / 2, Config.HEIGHT / 2 + 100
     expression = frame_data['expression']

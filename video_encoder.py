@@ -70,11 +70,16 @@ def encode_video(manifest_path, output_path, fps=24, frames_dir=None):
         else:
             print("[VideoEncoder] WARNING: No audio generated; producing silent video.")
 
-        # Write MP4 — aac audio codec for broad compatibility
+        # Write MP4 — use high bitrate and slower preset for much better quality
+        # CRF 18 is visually lossless; 23 is standard. Bitrate '5000k' for 720p/1080p.
         clip.write_videofile(
             output_path,
             codec='libx264',
             audio_codec='aac',
+            bitrate='12000k',  # High bitrate for 1080p
+            fps=fps,
+            preset='medium',
+            ffmpeg_params=['-crf', '18', '-pix_fmt', 'yuv420p'],
             threads=os.cpu_count() or 4,
             logger=None
         )

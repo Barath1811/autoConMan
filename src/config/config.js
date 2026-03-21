@@ -22,7 +22,9 @@ const config = {
   defaultVoice: process.env.DEFAULT_VOICE || 'en-US-ChristopherNeural',
   aiModel: process.env.AI_MODEL || 'gemini-flash-latest',
   wordsPerSec: parseFloat(process.env.WORDS_PER_SEC) || 2.8,
-  fps: parseInt(process.env.FPS) || 24,
+  fps: parseInt(process.env.FPS) || 30,
+  renderWidth: parseInt(process.env.RENDER_WIDTH) || 1920,
+  renderHeight: parseInt(process.env.RENDER_HEIGHT) || 1080,
   
   // Timing & Animation
   introDur: parseFloat(process.env.INTRO_DUR) || 1.0,
